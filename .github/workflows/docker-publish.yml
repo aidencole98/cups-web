@@ -40,6 +40,7 @@ jobs:
         with:
           context: ./
           file: ./Dockerfile
+          target: runtime
           platforms: linux/amd64,linux/arm64,linux/arm/v7
           push: true
           # 镜像 tag / VERSION：v* tag 推送用 tag 名（vX.Y.Z）并追加 latest；
@@ -53,6 +54,24 @@ jobs:
           cache-from: type=gha,scope=cups-web
           cache-to: type=gha,scope=cups-web,mode=max
 
+      - name: Build and push hanxi/cups-web (Web only, multi-arch)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./
+          file: ./Dockerfile
+          target: web-runtime
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          push: true
+          build-args: |
+            VERSION=${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}
+          tags: |
+            hanxi/cups-web:${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}-web${{ github.ref_type == 'tag' && '
+            hanxi/cups-web:latest-web' || '' }}
+          cache-from: |
+            type=gha,scope=cups-web
+            type=gha,scope=cups-web-web
+          cache-to: type=gha,scope=cups-web-web,mode=max
+
   output:
     name: Output pushed image refs
     runs-on: ubuntu-latest
@@ -62,3 +81,4 @@ jobs:
       - name: Output pushed image refs
         run: |
           echo "Pushed hanxi/cups-web:${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}${{ github.ref_type == 'tag' && ' and hanxi/cups-web:latest' || '' }}"
+          echo "Pushed hanxi/cups-web:${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}-web${{ github.ref_type == 'tag' && ' and hanxi/cups-web:latest-web' || '' }}"

@@ -13,7 +13,7 @@ ifneq ($(strip $(VERSION)),)
 LDFLAGS += -X main.Version=$(VERSION)
 endif
 
-.PHONY: all frontend build clean docker-build
+.PHONY: all frontend build clean docker-build docker-build-web
 all: frontend build
 
 frontend:
@@ -30,4 +30,7 @@ clean:
 
 docker-build:
 	docker build --build-arg VERSION=$(VERSION) -t cups-web:latest .
+
+docker-build-web:
+	docker build --target web-runtime --build-arg VERSION=$(VERSION) -t cups-web:web .
 

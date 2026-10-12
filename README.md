@@ -53,7 +53,7 @@
 
 ### 扫描能力（[Issue #111](https://github.com/hanxi/cups-web/issues/111)）
 
-镜像内置 `scanimage` + `libsane-hpaio`，Web 界面「扫描」入口对所有登录用户开放：
+AIO 镜像内置 `scanimage` + `libsane-hpaio`，Web 界面「扫描」入口对所有登录用户开放：
 
 - **单页平板扫描**：MVP 支持单张扫描；ADF / 双面暂未接入
 - **输出格式**：PNG（无损）/ JPEG（较小）/ PDF（先扫成 PNG，再用 Ghostscript 合成，规避不同 SANE 后端对 `--format=pdf` 支持不一致的问题）
@@ -68,7 +68,7 @@
 
 ### 打印机驱动
 
-镜像内预装了 Debian `printer-driver-all` 等通用驱动包，覆盖大部分常见打印机。对于特定品牌打印机，提供**按需手动安装**的驱动脚本和 Web 管理界面：
+AIO 镜像内预装了 Debian `printer-driver-all` 等通用驱动包，覆盖大部分常见打印机。对于特定品牌打印机，提供**按需手动安装**的驱动脚本和 Web 管理界面：
 
 **预装通用驱动**（开箱即用）：
 
@@ -196,9 +196,10 @@ curl -H "Authorization: Bearer cw_XXXXXXXX" https://your-host/api/printers
 
 ## 🚀 快速开始
 
-提供两种部署方式：
+提供三种部署方式：
 
 - [Docker 部署](#docker-部署)（推荐，一键拉起 CUPS + Web）
+- [仅 Web 镜像](#仅-web-镜像外部-cups)（已有 CUPS 服务，或搭配其他 CUPS 镜像）
 - [二进制部署](#二进制部署)（适合已有 CUPS 服务的场景）
 
 ---
@@ -310,6 +311,42 @@ docker exec cups driver-install canon-ufr2
 
 ---
 
+## 仅 Web 镜像（外部 CUPS）
+
+如果已有 CUPS 服务，可以使用仅包含 cups-web 服务的镜像。它保留 Web 界面、多用户、打印记录和 Office / OFD / PDF 文档转换能力，通过 `CUPS_HOST` 连接外部 CUPS。
+
+| 标签 | 内容 |
+| --- | --- |
+| `hanxi/cups-web:latest` / `dev` / `vX.Y.Z` | CUPS + Web 一体化镜像 |
+| `hanxi/cups-web:latest-web` / `dev-web` / `vX.Y.Z-web` | 仅 Web 镜像，连接外部 CUPS |
+
+先在外部 CUPS 中安装驱动、添加并共享打印机，确保 Web 容器能够访问其 IPP 服务。打印机配置、驱动安装和 AirPrint 广播由外部 CUPS 负责；仅 Web 镜像不提供本地 USB 扫描和驱动管理工具，无需 USB 挂载或特权模式。
+
+在 `.env` 中设置外部 CUPS 地址，例如：
+
+```dotenv
+CUPS_HOST=192.168.1.100:631
+```
+
+使用仓库中的 [docker-compose.web.yml](docker-compose.web.yml) 启动：
+
+```bash
+docker compose -f docker-compose.web.yml up -d
+```
+
+浏览器访问 <http://localhost:1180>，首次使用 `admin/admin` 登录并修改密码。数据库和上传文件分别持久化到 `./.data`、`./.uploads`。
+
+`CUPS_HOST` 应填写 Web 容器可访问的主机地址或同一 Docker 网络中的 CUPS 服务名，格式为 `host:port`；容器内的 `localhost` 指向 Web 容器自身。若与其他 CUPS 容器配合，请将两个服务加入同一 Docker 网络，并按该 CUPS 镜像的说明配置服务。
+
+也可以本地构建（尚未发布新标签时可使用此方式）：
+
+```bash
+make docker-build-web
+# 将 docker-compose.web.yml 的 image 改为 cups-web:web，再执行上面的启动命令。
+```
+
+---
+
 ## 二进制部署
 
 适合已有 CUPS 服务的场景。
@@ -384,11 +421,11 @@ export LISTEN_ADDR=:8080
 | `OFD_CONVERTER_JAR` | OFD → PDF 转换器 jar 路径 | `/ofd-converter.jar` |
 | `SCAN_DIR` | 扫描件输出目录，Docker 内挂到 `./.scans` | `scans` |
 
-> 💡 `.env.example` 只列了 Docker 部署常用的三个：`CUPSADMIN` / `CUPSPASSWORD` / `TZ`。这三个在镜像里都已有内置默认值（`print` / `print` / `Asia/Shanghai`），不写 `.env` 也能启动。
+> 💡 `.env.example` 列了 AIO 部署常用的 `CUPSADMIN` / `CUPSPASSWORD` / `TZ`，以及仅 Web 镜像使用的 `CUPS_HOST` 注释示例。AIO 的前三项都有内置默认值（`print` / `print` / `Asia/Shanghai`），不写 `.env` 也能启动；仅 Web 部署需要设置外部 CUPS 地址。
 >
 > 💡 `DB_PATH` / `UPLOAD_DIR` 的默认值是**相对路径**，镜像内工作目录是 `/`，所以容器里实际落在 `/data/cups-web.db` 与 `/uploads/`，正好对应下面的卷映射，通常不需要显式设置。
 >
-> 💡 `CUPS_HOST` 单容器化后默认就是 `localhost`（cupsd 与 Web 同容器），一般无需设置；只有把 Web 指向**另一台机器**上的 CUPS 时才需要，可写 `host` 或 `host:port`（省略端口时自动补 `631`）。
+> 💡 AIO 镜像的 `CUPS_HOST` 默认就是 `localhost`（cupsd 与 Web 同容器），一般无需设置；仅 Web 镜像需要设置为外部 CUPS 的地址，可写 `host` 或 `host:port`（省略端口时自动补 `631`）。
 >
 > 💡 `COOKIE_SECURE` 缺省的 `auto` 会在直连 HTTPS（`r.TLS`）或反代上报 `X-Forwarded-Proto: https` 时自动给 cookie 加 `Secure`，HTTP 内网部署行为不变。若代理错误地上报了 `https` 而浏览器实际走 HTTP，会出现「登录后立刻掉线」，此时显式设 `COOKIE_SECURE=false`。
 >

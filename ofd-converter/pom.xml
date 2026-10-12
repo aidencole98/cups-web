@@ -44,6 +44,18 @@
                             <goal>shade</goal>
                         </goals>
                         <configuration>
+                            <!-- 合并 JAR 后原依赖的签名已失效，必须移除签名元数据。 -->
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                        <exclude>META-INF/*.EC</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
                             <transformers>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
                                     <mainClass>org.cups.OfdConverter</mainClass>

@@ -1,18 +1,28 @@
 # Docker 构建与部署深度说明
 
-> 本文档是 [AGENTS.md](../AGENTS.md)「部署」章节的深度补充，收录五阶段构建设计理由、三架构基础镜像选型史、关键 `Dockerfile` 注释与 CI/CD 细节。docker-compose 配置速查表请回 AGENTS.md。
+> 本文档是 [AGENTS.md](../AGENTS.md)「部署」章节的深度补充，收录构建目标与共享依赖、三架构基础镜像选型史、关键 `Dockerfile` 注释与 CI/CD 细节。docker-compose 配置速查表请回 AGENTS.md。
 
 ## Docker 多阶段构建
 
-`Dockerfile`（**单容器 AIO：CUPS + Web 同镜像**）有**五个**构建阶段，**全部覆盖 `linux/amd64` + `linux/arm64` + `linux/arm/v7` 三架构**：
+根目录单份 `Dockerfile` 提供两个运行目标，均覆盖 `linux/amd64` + `linux/arm64` + `linux/arm/v7` 三架构：默认 `runtime` 为 CUPS + Web 一体化镜像，`web-runtime` 只运行 cups-web、连接外部 CUPS。共有七个阶段：
 
 1. `frontend-build`（`node:20-slim` + `npm`）：`npm ci` + `npm run build` 出 Vite dist
 2. `java-builder`（`--platform=$BUILDPLATFORM debian:trixie-slim` + apt `openjdk-21-jdk-headless` + Apache Maven tarball）：构建 `ofd-converter.jar`
 3. `builder`（`golang:1.26`）：`go build` 输出二进制（`CGO_ENABLED=0`，`-ldflags -X main.Version=$VERSION`）
 4. `cups-builder`（`debian:trixie-slim`）：跑 `scripts/build/install-cups.sh` 从 OpenPrinting/cups 源码编译（`CUPS_VERSION=2.4.19`，`--prefix=/usr` + `--libdir=/usr/lib/<multiarch>`），再把编译产物 `tar` 打包成 `/tmp/cups-compiled.tar`
-5. `runtime`（`debian:trixie-slim`）：装齐 CUPS 生态（`cups-filters`/`cups-daemon`/`printer-driver-*`/`hplip`/`avahi-daemon`/`ipp-usb`…）+ LibreOffice（core/writer/calc/impress）+ `openjdk-21-jre` + Ghostscript + 中文字体（`fonts-noto-cjk`、`fonts-wqy-zenhei`、`fonts-arphic-*`、`fonts-droid-fallback`），然后解包 overlay 覆盖 apt 版 CUPS
+5. `document-runtime`（`debian:trixie-slim`）：两种运行目标共用 LibreOffice、`openjdk-21-jre`、Ghostscript、字体及 fontconfig/cidfmap 配置，同时保留可写 HOME / LibreOffice profile 目录
+6. `web-runtime`（基于 `document-runtime`）：复制 Go 二进制和 OFD converter，直接 `ENTRYPOINT ["/cups-web"]`，仅暴露 8080，不安装 CUPS 服务、打印驱动、SANE 扫描栈或驱动管理脚本
+7. `runtime`（基于 `document-runtime`，最后一个阶段）：安装 CUPS 生态（`cups-filters`/`cups-daemon`/`printer-driver-*`/`hplip`/`avahi-daemon`/`ipp-usb`…）与扫描栈，解包 overlay 覆盖 apt 版 CUPS，沿用 AIO `entrypoint.sh`
 
-**运行身份是 root，不是 `nonroot`**：容器内要跑 `cupsd`、`lpadmin`、`dpkg`（运行时安装驱动），还要往 `/usr/lib/cups`、`/usr/share/ppd`、`/lib/firmware` 等系统路径写驱动文件。`docker-compose.yml` 里显式写了 `user: root`。
+**AIO 运行身份是 root，不是 `nonroot`**：容器内要跑 `cupsd`、`lpadmin`、`dpkg`（运行时安装驱动），还要往 `/usr/lib/cups`、`/usr/share/ppd`、`/lib/firmware` 等系统路径写驱动文件。`docker-compose.yml` 里显式写了 `user: root`。
+
+### 仅 Web 镜像
+
+`make docker-build-web` 等价于 `docker build --target web-runtime --build-arg VERSION=... -t cups-web:web .`。BuildKit 只构建目标所需的阶段，`web-runtime` 不依赖 `cups-builder`，因此不会编译 CUPS。文档转换所需的 `libcups` 共享库可能作为 LibreOffice 的依赖存在，不包含 `cupsd` 服务。
+
+`docker-compose.web.yml` 使用普通 bridge 网络，将宿主 1180 映射到容器 8080，只持久化 `/data` 和 `/uploads`。`CUPS_HOST` 必填；它配置的是 Go IPP 客户端的目标地址。外部 CUPS 负责队列、驱动、USB 接入和 AirPrint 广播，Web 容器没有相关管理命令与本地扫描工具。
+
+仅 Web 目标通过 `SCAN_DEVICES_CACHE_TTL=0` 跳过不适用的扫描启动预热。OFD converter 的 Maven Shade 配置会排除依赖 JAR 的签名文件（`META-INF/*.SF` / `*.DSA` / `*.RSA` / `*.EC`）：合并 JAR 和重写 Manifest 后，原签名不再有效，保留它们会导致 Java 报 `Invalid signature file digest for Manifest main attributes` 并拒绝启动。两种镜像共用这份修正后的 converter。
 
 ### 为什么 `cups-builder` 要「apt 装一遍 cups 再用源码编译版覆盖」
 
@@ -77,7 +87,7 @@ Eclipse Temurin 对 "Linux ARM 32-bit Hard-Float" 仅 JDK 8/11 有二进制，JD
 两条 workflow：
 
 - **`build-release.yml`**：push 到任何分支和 tag 时交叉编译 7 平台二进制（`linux/amd64`、`linux/arm64`、`linux/armv7`、`linux/loong64`、`darwin/amd64`、`darwin/arm64`、`windows/amd64`）。v* tag 推送时创建正式 Release；master 分支推送时创建滚动更新 `dev` prerelease（git 标签 `dev`，避免用分支名现 git 标签引来重名冲突）。CI 使用的 Go 版本（`setup-go` 的 `go-version`）与 `go.mod` 保持一致（当前 `1.26`），升级 `go.mod` 时请同步 CI。
-- **`docker-publish.yml`**：push 到 `master` 或 `v*` tag 时构建并推送镜像。**合并单容器后这里只剩一个 `build` job**（原来是 cups 镜像 + cups-web 镜像两个 job），单份 `Dockerfile` 出 `linux/amd64,linux/arm64,linux/arm/v7` 三架构的 `hanxi/cups-web`。v* tag 推送时打 `vX.Y.Z` + `latest` 两个镜像 tag；master 分支推送时打 `dev` 镜像 tag（避免 `master` 与分支/标签引用重名），`VERSION` build-arg 同步为 `dev`。缓存 scope 为 `cups-web`。开头还有一步 `Free disk space`（删 dotnet/android/CodeQL 缓存）——AIO 镜像把 CUPS 编译 + LibreOffice + 驱动生态塞进一份镜像后体积很大，GitHub runner 默认磁盘不够。
+- **`docker-publish.yml`**：push 到 `master` 或 `v*` tag 时，在同一个 `build` job 中依次构建两个运行目标的三架构镜像。AIO 保留 `vX.Y.Z` + `latest` / `dev` 标签；仅 Web 镜像使用 `vX.Y.Z-web` + `latest-web` / `dev-web`。两者的 `VERSION` build-arg 一致，不带镜像用途后缀。AIO 缓存 scope 为 `cups-web`；Web 读取 AIO 的共享构建缓存，并另存到 `cups-web-web`，避免覆盖 AIO 独有阶段的缓存。开头保留 `Free disk space`（删 dotnet/android/CodeQL 缓存）。
 
 补充说明：
 

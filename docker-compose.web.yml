@@ -1,0 +1,14 @@
+services:
+  web:
+    image: hanxi/cups-web:latest-web
+    container_name: cups-web
+    ports:
+      - "1180:8080"
+    environment:
+      # 连接已有 CUPS 服务；也可填同一 Docker 网络中的 CUPS 服务名和端口。
+      CUPS_HOST: ${CUPS_HOST:?请设置外部 CUPS 地址，例如 192.168.1.100:631}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - ./.data:/data
+      - ./.uploads:/uploads
+    restart: unless-stopped

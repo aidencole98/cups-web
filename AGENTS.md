@@ -9,6 +9,7 @@
 - **项目定位**：基于 CUPS 的 Web 打印管理工具，前后端分离
 - **技术栈**：Go 1.26（后端）+ Vue 3（前端）+ SQLite（存储）+ IPP（打印协议）
 - **部署形态**：单二进制（前端 `go:embed`）连接外部 CUPS；**单容器（AIO）Docker 镜像**（`cupsd` + `cups-web` 同容器，内置 LibreOffice + Java 21 + OFD 转换器 + Ghostscript + 打印驱动生态）
+- **仅 Web 镜像**：同一 `Dockerfile` 的 `web-runtime` 目标，保留文档转换依赖，通过 `CUPS_HOST` 连接外部 CUPS；标签带 `-web` 后缀，使用 `docker-compose.web.yml`，不运行 cupsd 或安装驱动/扫描工具。
 
 > ⚠️ **历史形态提示**：仓库曾经是「cups 镜像 + cups-web 镜像」双容器（`cups/` 目录），已在合并提交里删除。现在只有根目录的一份 `Dockerfile` / `entrypoint.sh`，构建脚本在 `scripts/build/`、驱动脚本在 `scripts/driver/`。
 
@@ -86,8 +87,9 @@ cups-web/
 │   └── driver/                    # 驱动管理命令 + 安装脚本 + capture-debs.sh（apt 钩子）
 ├── docker-fonts/                  # 构建期字体与 gs/fontconfig 配置
 ├── entrypoint.sh                  # AIO 容器启动脚本
-├── Dockerfile                     # 五阶段构建
+├── Dockerfile                     # 共享转换依赖 + AIO / 仅 Web 两个目标
 ├── docker-compose.yml             # 单服务 AIO
+├── docker-compose.web.yml         # 仅 Web，连接外部 CUPS
 └── Makefile                       # 构建脚本
 ```
 
@@ -481,6 +483,7 @@ make all            # 前端 dist + Go 二进制（必须先前端再后端）
 make frontend       # 仅前端
 make build          # 仅后端（禁止裸 go build ./cmd/server）
 make docker-build   # AIO 镜像
+make docker-build-web # 仅 Web 镜像（cups-web:web）
 ```
 
 ### Vite 开发代理
@@ -513,7 +516,7 @@ make docker-build   # AIO 镜像
 
 ### Docker 构建
 
-五阶段：`frontend-build`（node:20-slim）→ `java-builder`（BUILDPLATFORM 锁 amd64）→ `builder`（golang:1.26）→ `cups-builder`（源码编译 CUPS）→ `runtime`（trixie-slim）。覆盖 `linux/amd64` + `arm64` + `arm/v7`。
+七个阶段：`frontend-build`（node:20-slim）、`java-builder`（BUILDPLATFORM 锁 amd64）、`builder`（golang:1.26）、`cups-builder`（源码编译 CUPS）、`document-runtime`（共享转换依赖/字体）、`web-runtime`（仅 Web）和 `runtime`（默认 AIO）。覆盖 `linux/amd64` + `arm64` + `arm/v7`。`web-runtime` 不依赖 `cups-builder`，构建仅 Web 镜像时不会编译 CUPS。
 
 > 🚨 `cups-builder` 的 `ca-certificates` 请勿删除（wget TLS 校验，删了 CI 直接崩）。
 >
@@ -521,12 +524,12 @@ make docker-build   # AIO 镜像
 >
 > ⚠️ `cupsd` **不会自己创建** `/etc/cups/ssl`（源码里那处 `cupsdCheckPermissions` 的 `create_dir` 传的是 0，`lstat` 失败时既不 mkdir 也不报错），缺了它要到第一次 ipps 握手才炸 `Unable to create server credentials`，而 AirPrint 客户端优先挑 `_ipps._tcp`。以前它之所以存在纯粹是因为 Debian 的 `cups-daemon` 把它作为 package-owned 空目录发布 —— 那是别人的实现细节，现在 Dockerfile 与 entrypoint 各显式建一次。
 >
-> 五阶段设计理由、三架构镜像选型史、HOME/LibreOffice profile 见 [docs/docker-build.md](docs/docker-build.md)。
+> 构建目标与共享依赖设计、三架构镜像选型史、HOME/LibreOffice profile 见 [docs/docker-build.md](docs/docker-build.md)。
 
 ### CI/CD
 
 - **`build-release.yml`**：7 平台交叉编译。v* tag → 正式 Release；master 分支 → 滚动 `dev` prerelease（git 标签 `dev`，不用分支名，避免重名冲突）
-- **`docker-publish.yml`**：`master` / `v*` tag → 三架构镜像。v* tag → `vX.Y.Z` + `latest`；master 分支 → `dev`（`VERSION` 同步）。开头有 `Free disk space` 步骤。
+- **`docker-publish.yml`**：`master` / `v*` tag → 两种目标的三架构镜像。AIO 使用 `vX.Y.Z` + `latest` / `dev`，仅 Web 使用 `vX.Y.Z-web` + `latest-web` / `dev-web`；两者 `VERSION` 一致。开头有 `Free disk space` 步骤。
 
 ### 版本管理
 
