@@ -113,39 +113,19 @@ if [ -d /etc/cups/ppd ]; then
 fi
 
 # ══════════════════════════════════════════════════════════════
-# 5. HP host-based firmware upload (from cups/entrypoint.sh)
+# 5. HP host-based firmware monitor
 # ══════════════════════════════════════════════════════════════
-# ── HP host-based 打印机固件上传（issue #48 真正的修复点） ────────────
-# HP LaserJet 1020 / 1018 / 1005 / 1000 / P100x / P1505 等"GDI / host-based"
-# 机型每次上电都要先由主机把固件写入 /dev/usb/lpN 才能进入工作状态。物理机上
-# 由 foo2zjs 安装的 udev 规则（/usr/lib/udev/rules.d/85-hplj10xx.rules）
-# 根据 USB 产品字串匹配后 RUN+="hpljNNNN"，触发同包提供的
-# /usr/lib/udev/hpljNNNN 脚本——脚本内部走 CUPS USB backend 把
-# /lib/firmware/hp/sihpNNNN.dl 上传到打印机。
-#
-# 容器内没有 udev daemon、kernel uevent 也不会自动传进来，原生 udev 规则
-# 不会触发。这里复用 foo2zjs 上游同一个脚本——手动给它喂上 SUBSYSTEM 环境
-# 变量让防御性检查通过。CUPS backend 自己通过 libusb 枚举设备 ID 里带对应
-# 型号字串的打印机并上传固件。
-#
-# 后台跑：上游脚本里有 `sleep 3`（避开 udev 探测竞态），同步调用会拖慢
-# cupsd 启动。后台跑既不阻塞 cupsd，也不影响 USB backend。
-#
-# 覆盖型号：hplj1000/1005/1018/1020（foo2zjs）+ hpljP1005/P1006/P1505（foo2xqx）。
-# 仅对固件文件存在且 udev 脚本可执行的型号调用。
-HPLJ_LOADERS="hplj1000 hplj1005 hplj1018 hplj1020 hpljP1005 hpljP1006 hpljP1505"
-HPLJ_FW_LOG=/var/log/cups/hp-firmware.log
+# 容器没有 udev daemon，启动时的一次性 hplj 调用覆盖不了后开机/热插拔，
+# 也覆盖不了运行中刚安装固件的场景。参考 tzishue/cloud-printer 的修复脚本，
+# 持续检查 IEEE-1284 固件状态，按完整 USB URI 向未加载固件的受支持 HP 型号
+# 上传 /lib/firmware/hp/sihp*.dl；有 FWVER/FIRMWARE 或状态未知时跳过。
+# 使用镜像已有的 CUPS USB backend，不依赖 /dev/usb/lpN 或额外绑定 usblp。
+# 独立后台进程，探测/上传有超时，失败不阻塞 cupsd / cups-web 启动。
 mkdir -p /var/log/cups
-for loader_name in $HPLJ_LOADERS; do
-    loader_path="/usr/lib/udev/${loader_name}"
-    if [ -x "$loader_path" ]; then
-        echo "[entrypoint] dispatching ${loader_name} in background; log: ${HPLJ_FW_LOG}"
-        (
-            set +x
-            SUBSYSTEM=usb "$loader_path" >>"$HPLJ_FW_LOG" 2>&1 || true
-        ) &
-    fi
-done
+if [ -x /usr/local/bin/hp-firmware-monitor ]; then
+    echo "[entrypoint] starting HP firmware monitor; log: /var/log/cups/hp-firmware.log"
+    /usr/local/bin/hp-firmware-monitor >> /var/log/cups/hp-firmware.log 2>&1 &
+fi
 
 # ══════════════════════════════════════════════════════════════
 # 6. Start dbus + avahi + ipp-usb (from cups/entrypoint.sh)

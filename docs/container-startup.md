@@ -8,12 +8,22 @@
 2. **CUPS 管理员用户**：`/etc/shadow` 里没有 `$CUPSADMIN` 时 `useradd -r -G lpadmin` + `chpasswd`，并按 `$TZ` 配 tzdata
 3. **CUPS 配置还原**：`/etc/cups/cupsd.conf` 不存在（挂了空卷）时从镜像内的 `/etc/cups-bak/` 复制；随后**在 if 之外**幂等补 `ssl/` 目录与 `ReadyPaperSizes`（见下方专门说明）
 4. **HP 1020 PPD 的 Letter → A4 一次性修补**（issue #48）：只改 `*Product` + `*FoomaticIDs` 双重指纹命中、且当前默认仍是 Letter、且 `*PageSize A4` 存在的存量 PPD，改前备份 `.bak-cupsweb-issue48`
-5. **HP host-based 固件上传**：容器内没有 udev daemon，手动喂 `SUBSYSTEM=usb` 调用 foo2zjs 上游的 `/usr/lib/udev/hplj{1000,1005,1018,1020}` + `hpljP{1005,1006,1505}`，**后台跑**（上游脚本里有 `sleep 3`，同步调用会拖慢 cupsd 启动），日志在 `/var/log/cups/hp-firmware.log`
+5. **HP host-based 固件监控**：后台启动 `hp-firmware-monitor`，每 15 秒通过 CUPS USB backend 读取设备 ID，按完整 USB URI 为尚未加载固件的 HP 1000/1005/1018/1020/P1005–P1008/P1505 上传固件，覆盖后开机、热插拔和运行中安装固件的场景；日志在 `/var/log/cups/hp-firmware.log`
 6. **dbus + avahi + ipp-usb**：后台拉起，用于 driverless / IPP Everywhere 发现与 AirPrint 广播；三者均允许缺失/失败，不影响 cupsd。⚠️ dbus 用**容器内自启**的 `dbus-daemon --system`，不要挂载宿主 `/run/dbus/system_bus_socket`——socket 路径被占会导致容器 dbus 起不来、avahi 跟着失效（issue #107）；dbus/avahi 启动失败现在会打 `WARN` 日志而非静默
 7. **cupsd + watchdog**（见下方专门说明）
 8. **等 cupsd 就绪**：`lpstat -r` 轮询，最多 30 次 × 1s
 9. **HP 1020 队列 `media-default=A4`**：后台对命中的 HP 1020 队列执行 `lpadmin -p NAME -o media=iso_a4_210x297mm`，让 iOS 打印面板打开时**预选** A4。⚠️ 见下方「media-ready 的真相」——这一句**不**影响纸张候选**列表**
 10. **`exec /cups-web`**：作为 PID 1 前台运行（`exec` 替换父进程不会杀掉已 fork 的后台子 shell）
+
+## HP host-based 固件恢复
+
+参考 [tzishue/cloud-printer](https://hub.docker.com/r/tzishue/cloud-printer) 中的 `fix-foo2zjs-printer.sh`（用户反馈可恢复 HP LaserJet 1020 打印），借鉴持续监控、固件状态判断和 USB 自动挂起处理。旧启动流程只调用一次上游 `hplj*` 加载脚本，打印机后开机、重新插拔或运行中才安装固件时，容器内没有 udev 来触发第二次加载。
+
+`scripts/driver/hp-firmware-monitor.py` 使用镜像已有的 CUPS USB backend：发现输出含完整 URI 与 IEEE-1284 ID；只处理 URI 和设备 ID 中厂商、型号均匹配的受支持 HP LaserJet。发现 `FWVER` / `FIRMWARE` 字段时跳过，设备 ID 缺失或不完整时也跳过；同一 URI 对应多个设备时拒绝上传。每台设备使用对应固件，保留序列号和接口参数，P1007/P1008 分别使用 P1005/P1006 固件。M1005 MFP 不在处理范围内。
+
+固件仍由「驱动」页面安装到 `/lib/firmware/hp/`，监控会在后续检查中发现新文件。探测超时 20 秒、单次上传超时 30 秒，同一 URI 的上传尝试至少间隔 30 秒；后续通过设备 ID 确认固件状态。监控串行上传，并用 `/run/hp-firmware-monitor.lock` 防止重复实例。固件缺失、设备忙或单台失败不会阻止 Web 启动，也不会阻止后续重试。日志只在状态变化时记录。
+
+监控同时按 HP USB VID `03f0` 和受支持机型 PID 将 `power/control` 设为 `on`，减少 USB 自动挂起造成的连接中断；`/sys` 只读时继续固件加载。sysfs 中没有受支持 HP 设备时跳过 USB backend 探测，减少对其他打印机的访问。无需创建 `/dev/usb/lpN`、加载或强制绑定 `usblp`。USB 访问沿用现有 `/dev/bus/usb` 目录挂载与容器权限配置；队列 URI、错误策略和用户作业保持原有设置。
 
 ## ⚠️ 第 3 步的两条补丁为什么必须在 `if` 之外
 

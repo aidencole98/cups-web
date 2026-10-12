@@ -195,6 +195,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       hpijs-ppds \
       hp-ppd \
       hplip \
+      # HP 固件监控使用 Python 标准库解析 USB backend 的 IEEE-1284 设备 ID。
+      python3 \
       # ── SANE 扫描栈（issue #111）──
       # hplip 自带的 hp-scan 在容器里的 dbus/HPLIP 服务依赖有已知问题（补
       # 启 dbus-daemon 后仍报 "SANE: Error during device I/O code=9"）。
@@ -415,6 +417,7 @@ COPY scripts/driver/driver-install.sh /usr/local/bin/driver-install
 COPY scripts/driver/driver-list.sh /usr/local/bin/driver-list
 COPY scripts/driver/driver-remove.sh /usr/local/bin/driver-remove
 COPY scripts/driver/restore-drivers.sh /usr/local/bin/restore-drivers
+COPY scripts/driver/hp-firmware-monitor.py /usr/local/bin/hp-firmware-monitor
 # apt 的 DPkg::Pre-Install-Pkgs 钩子：driver-install 期间临时挂上，用来归档 apt
 # 即将安装的 .deb 原件（包级驱动持久化）。放 libexec 而不是 /usr/local/bin —— 它
 # 不是给人用的命令。见 scripts/driver/capture-debs.sh 的文件头注释。
@@ -423,7 +426,7 @@ COPY scripts/driver/capture-debs.sh /opt/cups-drivers/libexec/capture-debs
 # 其下的 <name>/manifest.txt 判断驱动是否已装。正常部署会用 volume 挂载覆盖它，但不挂卷
 # 直接 `docker run` 时目录也得存在，驱动安装/列表才不会因缺目录而行为异常（此时数据随容器
 # 销毁而丢失，属预期行为）。
-RUN chmod +x /usr/local/bin/driver-* /usr/local/bin/restore-drivers \
+RUN chmod +x /usr/local/bin/driver-* /usr/local/bin/restore-drivers /usr/local/bin/hp-firmware-monitor \
              /opt/cups-drivers/scripts/*.sh /opt/cups-drivers/libexec/capture-debs && \
     mkdir -p /opt/cups-drivers/data
 

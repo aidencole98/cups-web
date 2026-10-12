@@ -18,10 +18,9 @@
 # 固件上传到 USB 设备：物理机上由 udev 规则 /usr/lib/udev/rules.d/85-hplj10xx.rules
 # 触发同包的 /usr/lib/udev/hplj1020 脚本完成（该脚本通过 CUPS USB backend 把
 # 这里下好的 sihp1020.dl 写入打印机）。容器内没有 udev daemon、规则不会触发，
-# 因此 cups/entrypoint.sh 在启动 cupsd 之前会主动以 SUBSYSTEM=usb 调用一次
-# /usr/lib/udev/hplj1020——等价于"在容器里手动 trigger 一次 udev 事件"。
-# 这意味着本脚本下载的固件必须放在原生脚本期望的路径，否则原生脚本会因
-# "Missing firmware" 直接 return 1，等于没修复 issue #48。
+# 因此 entrypoint.sh 会启动 hp-firmware-monitor，持续检查并通过 CUPS USB
+# backend 加载固件，覆盖后开机/热插拔及运行中安装固件的场景。固件路径与
+# 原生 hplj 脚本保持一致：/lib/firmware/hp/。
 #
 # ────────────────────────────────────────────────────────────────────
 # 下载策略

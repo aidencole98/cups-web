@@ -306,6 +306,8 @@ docker exec cups driver-install canon-ufr2
 
 > ⚠️ **首次登录请立即修改默认密码**。
 
+> 💡 备选 CUPS 镜像：[tzishue/cloud-printer](https://hub.docker.com/r/tzishue/cloud-printer)，提供较丰富的打印机驱动。
+
 ---
 
 ## 二进制部署
