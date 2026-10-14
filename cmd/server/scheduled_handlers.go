@@ -195,12 +195,12 @@ func scheduledCreateHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "请选择文件；照片队列最多 100 张")
 		return
 	}
-	if _, err := buildScheduledRecordFromForm(r, sess.UserID, headers[0].Filename, "pending"); err != nil {
-		writeJSONError(w, http.StatusBadRequest, err.Error())
-		return
+	pending := make([]store.ScheduledFile, len(headers))
+	for i, fh := range headers {
+		pending[i] = store.ScheduledFile{Filename: fh.Filename, StoredPath: "pending"}
 	}
-	if queue && r.FormValue("schedule_type") == store.ScheduleOnce {
-		writeJSONError(w, http.StatusBadRequest, "照片队列请选择每天、每周或每月")
+	if _, err := buildScheduledRecordFromForm(r, sess.UserID, pending); err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	var saved []string
@@ -238,17 +238,10 @@ func scheduledCreateHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		files = append(files, item)
 	}
-	rec, err := buildScheduledRecordFromForm(r, sess.UserID, files[0].Filename, files[0].StoredPath)
+	rec, err := buildScheduledRecordFromForm(r, sess.UserID, files)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
-	}
-	if queue {
-		rec.Files = files
-		if err := ensureScheduleDefaults(&rec); err != nil {
-			writeJSONError(w, http.StatusBadRequest, err.Error())
-			return
-		}
 	}
 
 	var newID int64
@@ -617,7 +610,7 @@ func applyScheduledPayload(rec *store.ScheduledPrint, p scheduledUpdatePayload) 
 	}
 }
 
-func buildScheduledRecordFromForm(r *http.Request, userID int64, filename, storedPath string) (store.ScheduledPrint, error) {
+func buildScheduledRecordFromForm(r *http.Request, userID int64, files []store.ScheduledFile) (store.ScheduledPrint, error) {
 	f := r.MultipartForm.Value
 	getStr := func(key string) string {
 		if vs, ok := f[key]; ok && len(vs) > 0 {
@@ -655,8 +648,8 @@ func buildScheduledRecordFromForm(r *http.Request, userID int64, filename, store
 		Loop:   getBool("loop"), StartDate: getStr("start_date"),
 		Name:       strings.TrimSpace(getStr("name")),
 		PrinterURI: getStr("printer"),
-		Filename:   filename,
-		StoredPath: storedPath,
+		Filename:   files[0].Filename,
+		StoredPath: files[0].StoredPath,
 
 		IsDuplex:       getBool("duplex"),
 		IsColor:        getBool("color"),
@@ -680,6 +673,9 @@ func buildScheduledRecordFromForm(r *http.Request, userID int64, filename, store
 		ScheduleDay:     getInt("schedule_day", 1),
 		RunAt:           getStr("run_at"),
 		Enabled:         true,
+	}
+	if len(r.MultipartForm.File["files"]) > 0 {
+		rec.Files = files
 	}
 
 	if err := ensureScheduleDefaults(&rec); err != nil {

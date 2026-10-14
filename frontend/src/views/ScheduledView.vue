@@ -241,6 +241,7 @@
             </UFormField>
             <UFormField label="方向">
               <USelect class="w-full" v-model="form.orientation" :items="orientationItems" value-key="value" label-key="label" />
+              <template v-if="form.orientation === 'auto'" #help>每张按照片宽高选择方向，正方形使用纵向。</template>
             </UFormField>
             <UFormField label="双面">
               <USelect class="w-full" v-model="form.duplex" :items="duplexItems" value-key="value" label-key="label" />
@@ -325,6 +326,7 @@ watch(() => form.value.mode, (mode) => {
   form.value.scheduleType = mode === 'queue' ? 'daily' : 'once'
   form.value.paperType = mode === 'queue' ? 'photo' : 'plain'
   form.value.paperSize = mode === 'queue' ? '6inch' : 'A4'
+  if (mode === 'single' && form.value.orientation === 'auto') form.value.orientation = 'portrait'
 })
 watch(modalOpen, (open) => { if (!open) clearPhotoPreviews() })
 
@@ -346,7 +348,7 @@ function emptyForm() {
     duplex: 'one-sided',
     color: 'color',
     paperSize: '6inch',
-    orientation: 'portrait',
+    orientation: 'auto',
     watermarkText: ''
   }
 }
@@ -387,10 +389,11 @@ const paperSizeItems = [
   { value: '8inch', label: '8 寸相纸' },
   { value: '10inch', label: '10 寸相纸' }
 ]
-const orientationItems = [
+const orientationItems = computed(() => [
+  ...(form.value.mode === 'queue' ? [{ value: 'auto', label: '自动' }] : []),
   { value: 'portrait', label: '纵向' },
   { value: 'landscape', label: '横向' }
-]
+])
 const duplexItems = [
   { value: 'one-sided', label: '单面' },
   { value: 'two-sided-long-edge', label: '双面（长边）' }

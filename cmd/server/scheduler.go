@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"image"
 	"io"
 	"log"
 	"net/http"
@@ -108,7 +109,13 @@ func executeScheduled(s *store.Store, uploads string, task store.ScheduledPrint)
 	if err != nil {
 		return "failed", fmt.Errorf("原始文件缺失：%w", err)
 	}
+	orientation, orientationErr := resolveScheduledOrientation(task, origPath)
 	_ = origPath.Close()
+	if orientationErr != nil {
+		return "failed", fmt.Errorf("判断照片方向失败：%w", orientationErr)
+	}
+	// 只修改本张执行的副本；队列继续保存 auto，打印历史保存实际方向。
+	task.Orientation = orientation
 	absPath := filepath.Join(uploads, filepath.FromSlash(task.StoredPath))
 
 	// 独立超时：转换 + 打印链路加起来预留 5 分钟。
@@ -156,7 +163,15 @@ func executeScheduled(s *store.Store, uploads string, task store.ScheduledPrint)
 			return "failed", fmt.Errorf("解析页数失败：%w", err)
 		}
 	case fileKindImage:
-		outPath, cleanup, err := convertImageToPDF(absPath, task.Orientation, task.PaperSize, false, false, task.DriverOptions.PageSize != nil && task.DriverOptions.PageSize.Borderless)
+		imagePaperSize := task.PaperSize
+		if len(task.Files) > 0 {
+			// 驱动尺寸可能宽在前；转换器以纵向尺寸为基准再应用方向。
+			// 只调整本张 PDF 的布局尺寸，不修改驱动选择或记录的纸张参数。
+			if w, h, ok := ipp.ParsePaperDimensions(imagePaperSize); ok && w > h {
+				imagePaperSize = fmt.Sprintf("custom:%.4fx%.4f", h, w)
+			}
+		}
+		outPath, cleanup, err := convertImageToPDF(absPath, task.Orientation, imagePaperSize, false, false, task.DriverOptions.PageSize != nil && task.DriverOptions.PageSize.Borderless)
 		if err != nil {
 			return "failed", fmt.Errorf("图片转换失败：%w", err)
 		}
@@ -435,6 +450,28 @@ func parseScheduleTime(s string) (int, int, bool) {
 	return t.Hour(), t.Minute(), true
 }
 
+// resolveScheduledOrientation 按原图的实际像素宽高判断，不读取 EXIF 方向。
+// 调用方提供已在 uploads 根目录内安全打开的原图。
+func resolveScheduledOrientation(task store.ScheduledPrint, source io.Reader) (string, error) {
+	if task.Orientation != "auto" {
+		return task.Orientation, nil
+	}
+	if len(task.Files) == 0 {
+		return "", errors.New("自动方向仅支持照片定时队列")
+	}
+	cfg, format, err := image.DecodeConfig(source)
+	if err != nil {
+		return "", fmt.Errorf("读取图片尺寸失败：%w", err)
+	}
+	if (format != "jpeg" && format != "png" && format != "gif") || cfg.Width <= 0 || cfg.Height <= 0 {
+		return "", errors.New("照片队列仅支持有效的 JPG、PNG、GIF 图片")
+	}
+	if cfg.Width > cfg.Height {
+		return "landscape", nil
+	}
+	return "portrait", nil
+}
+
 // ensureScheduleDefaults 修剪 store.ScheduledPrint 字段，保证枚举合法。
 // 保持业务逻辑集中在一处，handler 与 scheduler 都可以调用。
 func ensureScheduleDefaults(rec *store.ScheduledPrint) error {
@@ -471,6 +508,15 @@ func ensureScheduleDefaults(rec *store.ScheduledPrint) error {
 	}
 	if rec.Orientation == "" {
 		rec.Orientation = "portrait"
+	}
+	switch rec.Orientation {
+	case "portrait", "landscape":
+	case "auto":
+		if len(rec.Files) == 0 {
+			return errors.New("自动方向仅支持照片定时队列")
+		}
+	default:
+		return fmt.Errorf("非法的 orientation: %q", rec.Orientation)
 	}
 	if rec.PaperSize == "" {
 		rec.PaperSize = "A4"
