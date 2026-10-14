@@ -181,7 +181,7 @@ func TestConvertImageToPDFInvert(t *testing.T) {
 	}
 	f.Close()
 
-	out, cleanup, err := convertImageToPDF(inPath, "portrait", "A4", true)
+	out, cleanup, err := convertImageToPDF(inPath, "portrait", "A4", true, false)
 	if err != nil {
 		t.Fatalf("convertImageToPDF(invert) failed: %v", err)
 	}

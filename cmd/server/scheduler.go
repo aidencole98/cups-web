@@ -150,7 +150,7 @@ func executeScheduled(s *store.Store, uploads string, task store.ScheduledPrint)
 			return "failed", fmt.Errorf("解析页数失败：%w", err)
 		}
 	case fileKindImage:
-		outPath, cleanup, err := convertImageToPDF(absPath, task.Orientation, task.PaperSize, false)
+		outPath, cleanup, err := convertImageToPDF(absPath, task.Orientation, task.PaperSize, false, false)
 		if err != nil {
 			return "failed", fmt.Errorf("图片转换失败：%w", err)
 		}

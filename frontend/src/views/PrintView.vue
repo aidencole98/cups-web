@@ -232,7 +232,7 @@
           <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
             <div v-for="(img, idx) in selectedImages" :key="idx" class="relative group rounded-lg overflow-hidden border border-default">
               <img :src="imageThumbnails[idx]" class="w-full h-20 object-cover" :style="imageRotations[idx] ? `transform: rotate(${imageRotations[idx]}deg)` : ''" />
-              <div class="absolute top-1 right-1 flex gap-1">
+              <div class="absolute top-1 right-1 z-10 flex gap-1">
                 <UButton variant="solid" size="xs" color="primary" icon="i-lucide-rotate-ccw" title="左旋90°" @click="rotateImage(idx, -90)" />
                 <UButton variant="solid" size="xs" color="primary" icon="i-lucide-rotate-cw" title="右旋90°" @click="rotateImage(idx, 90)" />
               </div>
@@ -249,6 +249,9 @@
           v-model:isColor="isColor"
           v-model:invert="invert"
           :invert-visible="isInvertible"
+          v-model:compressImages="compressImages"
+          :image-compression-visible="printMode === 'standard' && (isImageKind || batchFiles.some(f => f.type.startsWith('image/')))"
+          :image-compression-disabled="converting || printing || batchPrinting"
           v-model:duplex="duplex"
           v-model:copies="copies"
           v-model:paperSize="paperSize"
@@ -438,6 +441,8 @@ const batchProgress = ref({ current: 0, total: 0 })
 const isColor = ref(true)
 // 黑白反转（issue #87）：仅图片转 PDF、黑白模式下生效
 const invert = ref(false)
+const compressImages = ref(false)
+let imageConversionVersion = 0
 const duplex = ref('one-sided')
 const orientation = ref('portrait')
 const copies = ref(1)
@@ -611,6 +616,21 @@ const isImageKind = computed(() =>
 const isInvertible = computed(() => isImageKind.value && !isColor.value)
 // 切换到非「图片+黑白」场景时重置反转，避免彩色时残留反色
 watch(isInvertible, (v) => { if (!v) invert.value = false })
+watch(compressImages, () => {
+  imageConversionVersion++
+  if (!isImageKind.value) return
+  pdfBlob.value = null
+  converted.value = false
+  gsApplied.value = false
+  // HEIC 解码未完成时保留加载提示，等待原有解码流程更新预览。
+  const previewFile = isMultiImage.value
+    ? selectedImages.value.find(f => !isHeicImage(f))
+    : (isHeicImage(selectedFile.value) ? null : selectedFile.value)
+  if (!previewFile) return
+  clearPreviewUrl()
+  previewUrl.value = URL.createObjectURL(previewFile)
+  previewType.value = 'image'
+}, { flush: 'sync' })
 const canPrint = computed(() => {
   if (!printer.value) return false
   if (printMode.value === 'standard') {
@@ -692,13 +712,15 @@ const paperPreviewStyle = computed(() => {
 
 // ─── 文件操作 ─────────────────────────────────────────────
 function clearPreviewUrl() {
-  if (previewUrl.value) {
+  // 多图初始预览与缩略图共用地址，由 clearFile/removeImage 负责释放。
+  if (previewUrl.value && !imageThumbnails.value.includes(previewUrl.value)) {
     try { URL.revokeObjectURL(previewUrl.value) } catch (_) { /* 忽略 */ }
   }
   previewUrl.value = ''
 }
 
 function clearFile() {
+  imageConversionVersion++
   clearPreviewUrl()
   previewType.value = ''
   textPreview.value = ''
@@ -813,6 +835,7 @@ async function heicBlobToJpegBlob(file) {
 // 多图合一逐图旋转（issue #87）：左旋/右旋 90°，归一化到 0/90/180/270。
 // 旋转后旧的合并 PDF 失效，清掉 pdfBlob 强制重新转换，避免打印到未旋转的旧 PDF。
 function rotateImage(idx, delta) {
+  imageConversionVersion++
   const cur = imageRotations.value[idx] || 0
   let next = (cur + delta) % 360
   if (next < 0) next += 360
@@ -823,6 +846,7 @@ function rotateImage(idx, delta) {
 
 // 切换每页张数(issue #37):使上一次的 PDF 失效,让用户再点"合并"重新预览。
 function setImagesPerPage(n) {
+  imageConversionVersion++
   imagesPerPage.value = n
   pdfBlob.value = null
   converted.value = false
@@ -884,6 +908,7 @@ function processMultipleImages(files) {
 }
 
 function removeImage(idx) {
+  imageConversionVersion++
   URL.revokeObjectURL(imageThumbnails.value[idx])
   selectedImages.value.splice(idx, 1)
   imageThumbnails.value.splice(idx, 1)
@@ -900,7 +925,8 @@ function removeImage(idx) {
     clearFile()
   } else {
     fileDisplayName.value = `${selectedImages.value.length}张图片`
-    // 更新预览为第一张（不调用 clearPreviewUrl，因为旧 previewUrl 与 imageThumbnails 共享同一 URL）
+    // 释放独立预览（例如转换后的 PDF），缩略图共用地址由 clearPreviewUrl 保留。
+    clearPreviewUrl()
     previewUrl.value = imageThumbnails.value[0]
     converted.value = false
     pdfBlob.value = null
@@ -933,10 +959,12 @@ async function uploadAndPrintBatch() {
       // 非 PDF 文件需要先转换
       if (file.type !== 'application/pdf') {
         const fd = new FormData()
-        fd.append('file', file, file.name)
+        const uploadFile = compressImages.value ? await downscaleImageIfNeeded(file, true) : file
+        fd.append('file', uploadFile, uploadFile.name)
         fd.append('orientation', orientation.value)
         fd.append('paper_size', paperSize.value)
         if (invert.value) fd.append('invert', 'true')
+        if (compressImages.value) fd.append('compress_images', 'true')
         const convertResp = await apiFetch('/api/convert', { method: 'POST', body: fd }, () => emit('logout'))
         if (!convertResp.ok) {
           throw new Error(await readError(convertResp))
@@ -998,9 +1026,10 @@ async function uploadAndPrintBatch() {
 //   sequential 而非 Promise.all 是为了避免移动端同时持有多张大 canvas 导致 OOM。
 async function convertImagesToPdfViaServer(files, orient, pSize, name, rotations, invert) {
   const list = Array.isArray(files) ? files : [files]
+  const compress = compressImages.value
   const downscaled = []
   for (const f of list) {
-    downscaled.push(await downscaleImageIfNeeded(f))
+    downscaled.push(await downscaleImageIfNeeded(f, compress))
   }
   const fd = new FormData()
   if (downscaled.length === 1) {
@@ -1021,6 +1050,7 @@ async function convertImagesToPdfViaServer(files, orient, pSize, name, rotations
   if (orient) fd.append('orientation', orient)
   if (pSize) fd.append('paper_size', pSize)
   if (invert) fd.append('invert', 'true')
+  if (compress) fd.append('compress_images', 'true')
   const resp = await apiFetch('/api/convert', { method: 'POST', body: fd }, () => emit('logout'))
   if (!resp.ok) throw new Error(await readError(resp))
   return resp.blob()
@@ -1047,7 +1077,9 @@ async function convertOfficeToPdf(file) {
 }
 
 async function convertToPdf() {
+  if (converting.value) return
   if (!selectedFile.value && !isMultiImage.value) return
+  const conversionVersion = imageConversionVersion
   converting.value = true
   try {
     const f = selectedFile.value
@@ -1064,6 +1096,7 @@ async function convertToPdf() {
     } else {
       blob = await convertTextViaServer(f, orientation.value, paperSize.value)
     }
+    if (conversionVersion !== imageConversionVersion) return
     pdfBlob.value = blob
     clearPreviewUrl()
     previewUrl.value = URL.createObjectURL(blob)
@@ -1121,8 +1154,8 @@ async function uploadAndPrint() {
 
   const fileToSend = pdfBlob.value || selectedFile.value
   if (!fileToSend && !isMultiImage.value) { toast.add({ title: '请先选择文件', color: 'warning' }); return }
-  // 多图片未转换时自动转换
-  if (isMultiImage.value && !pdfBlob.value) {
+  // 多图或启用压缩的单图先转 PDF，确保预览和打印使用相同的压缩结果。
+  if ((isMultiImage.value || (compressImages.value && isImageKind.value)) && !pdfBlob.value) {
     await convertToPdf()
     if (!pdfBlob.value) return
   }

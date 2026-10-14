@@ -31,6 +31,10 @@
         </label>
       </UFormField>
 
+      <UFormField v-if="imageCompressionVisible" label="图片压缩">
+        <UCheckbox :model-value="compressImages" :disabled="imageCompressionDisabled" label="启用图片压缩" description="每张图片压至 800KB 以下，可能降低清晰度；适合内存较小的打印机。" @update:model-value="$emit('update:compressImages', $event)" />
+      </UFormField>
+
       <!-- 双面 + 份数 -->
       <div class="grid grid-cols-2 gap-3">
         <UFormField label="双面打印">
@@ -184,6 +188,9 @@ const props = defineProps({
   isColor: { type: Boolean, default: true },
   invert: { type: Boolean, default: false },
   invertVisible: { type: Boolean, default: false },
+  compressImages: { type: Boolean, default: false },
+  imageCompressionVisible: { type: Boolean, default: false },
+  imageCompressionDisabled: { type: Boolean, default: false },
   duplex: { type: String, default: 'one-sided' },
   copies: { type: Number, default: 1 },
   paperSize: { type: String, default: 'A4' },
@@ -203,7 +210,7 @@ const props = defineProps({
 })
 
 const emit = defineEmits([
-  'update:isColor', 'update:invert',
+  'update:isColor', 'update:invert', 'update:compressImages',
   'update:duplex', 'update:copies',
   'update:paperSize', 'update:paperType', 'update:mediaSource', 'update:printScaling', 'update:scalePercent', 'update:pageRange',
   'update:pageSet', 'update:mirror', 'update:watermarkText',

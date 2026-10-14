@@ -13,11 +13,13 @@
 
 const MAX_EDGE = 3000
 const JPEG_QUALITY = 0.85
+const MAX_BYTES = 800_000
 
-// 长边 ≤ MAX_EDGE 的图片原样返回，避免无意义的二次有损编码。
+// 默认长边 ≤ MAX_EDGE 的图片原样返回，避免无意义的二次有损编码。
 // 解码 / 绘制 / 编码任一步失败时也回退到原文件，让后端按原路径处理（最差情况
 // 退化到旧行为，不会比修复前更糟）。
-export async function downscaleImageIfNeeded(file) {
+// compress=true 时额外保证编码大小 ≤ 800KB，无法压缩则报错，不能回退超限原图。
+export async function downscaleImageIfNeeded(file, compress = false) {
   if (!file || typeof file !== 'object') return file
   // 仅处理图片：HEIC 已在上层 heic2any 转成 JPEG，所以这里只看 image/* 即可。
   const type = (file.type || '').toLowerCase()
@@ -27,17 +29,18 @@ export async function downscaleImageIfNeeded(file) {
   try {
     bitmap = await createImageBitmap(file)
   } catch (e) {
+    if (compress) throw new Error('图片解码失败，无法压缩：' + file.name)
     console.warn('[downscaleImageIfNeeded] createImageBitmap failed, fallback to original:', e)
     return file
   }
 
   const longEdge = Math.max(bitmap.width, bitmap.height)
-  if (longEdge <= MAX_EDGE) {
+  if (longEdge <= MAX_EDGE && (!compress || file.size <= MAX_BYTES)) {
     bitmap.close?.()
     return file
   }
 
-  const scale = MAX_EDGE / longEdge
+  const scale = Math.min(1, MAX_EDGE / longEdge)
   const dstW = Math.max(1, Math.round(bitmap.width * scale))
   const dstH = Math.max(1, Math.round(bitmap.height * scale))
 
@@ -45,16 +48,34 @@ export async function downscaleImageIfNeeded(file) {
   canvas.width = dstW
   canvas.height = dstH
   const ctx = canvas.getContext('2d')
+  if (!ctx) {
+    bitmap.close?.()
+    if (compress) throw new Error('浏览器无法处理图片压缩')
+    return file
+  }
   // 与后端一致：JPEG 不支持透明，先整体填白再叠图，PNG 透明区在输出里表现为白色。
-  ctx.fillStyle = '#ffffff'
-  ctx.fillRect(0, 0, dstW, dstH)
-  ctx.drawImage(bitmap, 0, 0, dstW, dstH)
-  bitmap.close?.()
-
-  const blob = await new Promise(resolve => {
-    canvas.toBlob(resolve, 'image/jpeg', JPEG_QUALITY)
-  })
-  if (!blob) return file
+  let blob
+  try {
+    while (true) {
+      ctx.fillStyle = '#ffffff'
+      ctx.fillRect(0, 0, canvas.width, canvas.height)
+      ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
+      for (const quality of (compress ? [0.85, 0.75, 0.65, 0.55, 0.45] : [JPEG_QUALITY])) {
+        blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', quality))
+        if (!blob) {
+          if (compress) throw new Error('图片编码失败，无法压缩：' + file.name)
+          return file
+        }
+        if (!compress || blob.size <= MAX_BYTES) break
+      }
+      if (!compress || blob.size <= MAX_BYTES) break
+      if (canvas.width === 1 && canvas.height === 1) throw new Error('无法将图片压缩至 800KB 以下')
+      canvas.width = Math.max(1, Math.floor(canvas.width * 0.8))
+      canvas.height = Math.max(1, Math.floor(canvas.height * 0.8))
+    }
+  } finally {
+    bitmap.close?.()
+  }
 
   // 原文件名保留语义但改成 .jpg 后缀（已经是 JPEG 了）
   const baseName = (file.name || 'image').replace(/\.[^/.]+$/, '')

@@ -276,7 +276,7 @@ func getOrientationCode(orientation string) string {
 	return "P"
 }
 
-func convertImageToPDF(inputPath string, orientation string, paperSize string, invert bool) (string, func(), error) {
+func convertImageToPDF(inputPath string, orientation string, paperSize string, invert bool, compress bool) (string, func(), error) {
 	tmpDir, err := os.MkdirTemp("", "convert-img-")
 	if err != nil {
 		return "", nil, err
@@ -295,6 +295,14 @@ func convertImageToPDF(inputPath string, orientation string, paperSize string, i
 	if err != nil {
 		cleanup()
 		return "", nil, err
+	}
+
+	if compress {
+		imgPath, cfg, err = compressImageIfNeeded(imgPath, tmpDir)
+		if err != nil {
+			cleanup()
+			return "", nil, err
+		}
 	}
 
 	// 处理方向和纸张大小
@@ -418,11 +426,13 @@ func convertTextToPDF(inputPath string, orientation string, paperSize string) (s
 // convertImagesMultiToPDF 将多张图片合并为单个 PDF。
 // 每张图片占据一页,按等比例缩放居中绘制,页面大小与方向由 orientation / paperSize 决定。
 // perPage 支持把多张图片排到同一页(issue #37,类 WinXP 打印图片向导):
-//   1(默认) → 每张一页
-//   2/4/6/9 → 每页对应张数,按行优先的等分网格居中
+//
+//	1(默认) → 每张一页
+//	2/4/6/9 → 每页对应张数,按行优先的等分网格居中
+//
 // 非法或 <=1 的 perPage 一律按 1 处理。
 // 调用方负责在使用完输出 PDF 后调用返回的 cleanup 清理临时目录。
-func convertImagesMultiToPDF(fileHeaders []*multipart.FileHeader, orientation string, paperSize string, rotations []int, invert bool, perPage int) (string, func(), error) {
+func convertImagesMultiToPDF(fileHeaders []*multipart.FileHeader, orientation string, paperSize string, rotations []int, invert bool, perPage int, compress bool) (string, func(), error) {
 	if len(fileHeaders) == 0 {
 		return "", nil, errors.New("no image files provided")
 	}
@@ -480,6 +490,13 @@ func convertImagesMultiToPDF(fileHeaders []*multipart.FileHeader, orientation st
 		if err != nil {
 			cleanup()
 			return "", nil, err
+		}
+		if compress {
+			finalPath, cfg, err = compressImageIfNeeded(finalPath, tmpDir)
+			if err != nil {
+				cleanup()
+				return "", nil, err
+			}
 		}
 		saved = append(saved, savedImage{path: finalPath, cfg: cfg})
 	}

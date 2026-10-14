@@ -392,7 +392,7 @@ func reprintHandler(w http.ResponseWriter, r *http.Request) {
 		printCleanup = cleanup
 		printMime = "application/pdf"
 	case fileKindImage:
-		outPath, cleanup, err := convertImageToPDF(storedAbs, req.Orientation, req.PaperSize, false)
+		outPath, cleanup, err := convertImageToPDF(storedAbs, req.Orientation, req.PaperSize, false, false)
 		if err != nil {
 			_ = os.Remove(storedAbs)
 			writeJSONError(w, http.StatusBadRequest, "conversion failed")

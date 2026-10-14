@@ -209,6 +209,7 @@ cups-web/
 | `page_range` | string | 页码范围 |
 | `page_set` | `all` / `odd` / `even` | 页面子集（`all` 不发送） |
 | `mirror` | `"true"` / `"false"` | 镜像 |
+| `compress_images` | `"true"` / `"false"` | 图片压缩，默认关闭；每张图片编码大小不超过 800,000 字节，仅图片转换生效 |
 | `number_up` | `1`–`16` | N-up（`1` 不发送） |
 | `number_up_layout` | `lrtb` / `rltb` / `tblr` / `tbrl` | N-up 排布 |
 | `page_border` | `single` / `none` | N-up 边框 |

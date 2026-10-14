@@ -29,6 +29,7 @@ func convertHandler(w http.ResponseWriter, r *http.Request) {
 	paperSize := r.FormValue("paper_size")
 	// 黑白反转（issue #87）：仅对图片转 PDF 生效
 	invert := r.FormValue("invert") == "true"
+	compress := r.FormValue("compress_images") == "true"
 
 	var outPath string
 	var outCleanup func()
@@ -47,7 +48,7 @@ func convertHandler(w http.ResponseWriter, r *http.Request) {
 					perPage = n
 				}
 			}
-			outPath, outCleanup, err = convertImagesMultiToPDF(headers, orientation, paperSize, rotations, invert, perPage)
+			outPath, outCleanup, err = convertImagesMultiToPDF(headers, orientation, paperSize, rotations, invert, perPage, compress)
 			if err != nil {
 				writeJSONError(w, http.StatusInternalServerError, "文件转换失败："+err.Error())
 				return
@@ -86,7 +87,7 @@ func convertHandler(w http.ResponseWriter, r *http.Request) {
 	kind := detectFileKind(inPath, fh.Filename)
 	switch kind {
 	case fileKindImage:
-		outPath, outCleanup, err = convertImageToPDF(inPath, orientation, paperSize, invert)
+		outPath, outCleanup, err = convertImageToPDF(inPath, orientation, paperSize, invert, compress)
 	case fileKindText:
 		outPath, outCleanup, err = convertTextToPDF(inPath, orientation, paperSize)
 	case fileKindOFD:
