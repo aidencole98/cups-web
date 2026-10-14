@@ -1,0 +1,8 @@
+# 与 docker-compose.web.yml 合用，连接宿主机 CUPS 的 Unix Socket。
+# CUPS_SOCKET_DIR 指定宿主机运行目录，默认 /var/run/cups。
+services:
+  web:
+    environment:
+      CUPS_SOCKET_PATH: /var/run/cups/cups.sock
+    volumes:
+      - ${CUPS_SOCKET_DIR:-/var/run/cups}:/var/run/cups:ro

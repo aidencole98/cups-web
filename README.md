@@ -316,7 +316,7 @@ docker exec cups driver-install canon-ufr2
 
 ## 仅 Web 镜像（外部 CUPS）
 
-如果已有 CUPS 服务，可以使用仅包含 cups-web 服务的镜像。它保留 Web 界面、多用户、打印记录和 Office / OFD / PDF 文档转换能力，通过 `CUPS_HOST` 连接外部 CUPS。
+如果已有 CUPS 服务，可以使用仅包含 cups-web 服务的镜像。它保留 Web 界面、多用户、打印记录和 Office / OFD / PDF 文档转换能力，通过 `CUPS_HOST`（TCP）或 `CUPS_SOCKET_PATH`（Unix Socket）连接外部 CUPS。
 
 | 标签 | 内容 |
 | --- | --- |
@@ -340,6 +340,50 @@ docker compose -f docker-compose.web.yml up -d
 浏览器访问 <http://localhost:1180>，首次使用 `admin/admin` 登录并修改密码。数据库和上传文件分别持久化到 `./.data`、`./.uploads`。
 
 `CUPS_HOST` 应填写 Web 容器可访问的主机地址或同一 Docker 网络中的 CUPS 服务名，格式为 `host:port`；容器内的 `localhost` 指向 Web 容器自身。若与其他 CUPS 容器配合，请将两个服务加入同一 Docker 网络，并按该 CUPS 镜像的说明配置服务。
+
+### 通过 Unix Socket 连接
+
+同一宿主机上可以共享 CUPS 的运行目录，通过 Unix Socket 通信，无需为 Web 连接开放 CUPS TCP 端口。在外部 CUPS 的 `cupsd.conf` 中启用：
+
+```conf
+Listen /var/run/cups/cups.sock
+```
+
+连接宿主机 CUPS 时，使用仓库中的 [Socket Compose 配置](docker-compose.web.socket.yml)：
+
+```bash
+docker compose -f docker-compose.web.yml -f docker-compose.web.socket.yml up -d
+```
+
+默认将宿主机 `/var/run/cups` 只读挂载到 Web 容器中的同一路径；宿主机目录不同时，在 `.env` 中设置 `CUPS_SOCKET_DIR`。该配置自动设置 `CUPS_SOCKET_PATH=/var/run/cups/cups.sock`，无需设置 `CUPS_HOST`。
+
+跨容器部署时，在现有 CUPS Compose 项目中让两个服务挂载同一个运行目录卷。例如，将下列配置合并到已有服务配置中（替换卷名及服务名）：
+
+```yaml
+services:
+  cupsd:
+    volumes:
+      - cups_runtime:/var/run/cups
+  web:
+    image: hanxi/cups-web:latest-web
+    ports:
+      - "1180:8080"
+    environment:
+      CUPS_SOCKET_PATH: /var/run/cups/cups.sock
+    volumes:
+      - cups_runtime:/var/run/cups:ro
+      - ./.data:/data
+      - ./.uploads:/uploads
+    restart: unless-stopped
+volumes:
+  cups_runtime:
+```
+
+挂载包含 socket 的**整个目录**，避免 cupsd 重建 socket 后单文件挂载失效。Web 进程仍需具备该目录的遍历权限和 socket 的连接权限；只读挂载不替代 Unix 文件权限检查。
+
+`CUPS_SOCKET_PATH` 必须是进程可见的绝对文件路径，设置后优先于 `CUPS_HOST`。Socket 不存在、权限不足或连接失败时，请求报错且服务端日志记录原因，不会回退到 TCP。接口中的打印机 URI 保持 HTTP/IPP 格式，Socket 模式下使用 `localhost:631` 作为占位主机，实际连接只走配置的 socket。历史打印记录和定时任务中的队列地址也通过同一 socket 连接；切换 CUPS 服务时需确保原队列名仍存在。
+
+Socket 模式的目标由部署配置固定，`PRINTER_HOST_ALLOWLIST` / `PRINTER_BLOCK_PRIVATE` 仅作用于 TCP 模式。外部 CUPS 的访问策略继续生效；驱动、队列配置和 AirPrint 广播仍由外部 CUPS 管理。
 
 也可以本地构建（尚未发布新标签时可使用此方式）：
 
@@ -414,6 +458,7 @@ export LISTEN_ADDR=:8080
 | `DB_PATH` | SQLite 数据库路径 | `data/cups-web.db` |
 | `UPLOAD_DIR` | 上传文件目录 | `uploads` |
 | `CUPS_HOST` | CUPS 服务地址（Docker 内默认 `localhost`） | `localhost` |
+| `CUPS_SOCKET_PATH` | CUPS Unix Socket 的绝对路径；非空时优先于 `CUPS_HOST` | 空（使用 TCP） |
 | `CUPSADMIN` | CUPS 管理员用户名 | `print` |
 | `CUPSPASSWORD` | CUPS 管理员密码 | `print` |
 | `TZ` | 时区 | `Asia/Shanghai` |
@@ -424,11 +469,11 @@ export LISTEN_ADDR=:8080
 | `OFD_CONVERTER_JAR` | OFD → PDF 转换器 jar 路径 | `/ofd-converter.jar` |
 | `SCAN_DIR` | 扫描件输出目录，Docker 内挂到 `./.scans` | `scans` |
 
-> 💡 `.env.example` 列了 AIO 部署常用的 `CUPSADMIN` / `CUPSPASSWORD` / `TZ`，以及仅 Web 镜像使用的 `CUPS_HOST` 注释示例。AIO 的前三项都有内置默认值（`print` / `print` / `Asia/Shanghai`），不写 `.env` 也能启动；仅 Web 部署需要设置外部 CUPS 地址。
+> 💡 `.env.example` 列了 AIO 部署常用的 `CUPSADMIN` / `CUPSPASSWORD` / `TZ`，以及仅 Web 镜像使用的 `CUPS_HOST` / `CUPS_SOCKET_PATH` 注释示例。AIO 的前三项都有内置默认值（`print` / `print` / `Asia/Shanghai`），不写 `.env` 也能启动；仅 Web 部署需配置外部 CUPS 的 TCP 地址或 socket。
 >
 > 💡 `DB_PATH` / `UPLOAD_DIR` 的默认值是**相对路径**，镜像内工作目录是 `/`，所以容器里实际落在 `/data/cups-web.db` 与 `/uploads/`，正好对应下面的卷映射，通常不需要显式设置。
 >
-> 💡 AIO 镜像的 `CUPS_HOST` 默认就是 `localhost`（cupsd 与 Web 同容器），一般无需设置；仅 Web 镜像需要设置为外部 CUPS 的地址，可写 `host` 或 `host:port`（省略端口时自动补 `631`）。
+> 💡 AIO 镜像的 `CUPS_HOST` 默认就是 `localhost`（cupsd 与 Web 同容器），一般无需设置；仅 Web 镜像在 TCP 模式下需要设置外部 CUPS 地址，可写 `host` 或 `host:port`（省略端口时自动补 `631`）。Unix Socket 模式见上面的部署示例。
 >
 > 💡 `COOKIE_SECURE` 缺省的 `auto` 会在直连 HTTPS（`r.TLS`）或反代上报 `X-Forwarded-Proto: https` 时自动给 cookie 加 `Secure`，HTTP 内网部署行为不变。若代理错误地上报了 `https` 而浏览器实际走 HTTP，会出现「登录后立刻掉线」，此时显式设 `COOKIE_SECURE=false`。
 >

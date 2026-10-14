@@ -20,7 +20,7 @@
 
 `make docker-build-web` 等价于 `docker build --target web-runtime --build-arg VERSION=... -t cups-web:web .`。BuildKit 只构建目标所需的阶段，`web-runtime` 不依赖 `cups-builder`，因此不会编译 CUPS。文档转换所需的 `libcups` 共享库可能作为 LibreOffice 的依赖存在，不包含 `cupsd` 服务。
 
-`docker-compose.web.yml` 使用普通 bridge 网络，将宿主 1180 映射到容器 8080，只持久化 `/data` 和 `/uploads`。`CUPS_HOST` 必填；它配置的是 Go IPP 客户端的目标地址。外部 CUPS 负责队列、驱动、USB 接入和 AirPrint 广播，Web 容器没有相关管理命令与本地扫描工具。
+`docker-compose.web.yml` 使用普通 bridge 网络，将宿主 1180 映射到容器 8080，持久化 `/data` 和 `/uploads`。TCP 模式需配置外部 `CUPS_HOST`；Unix Socket 模式设置 `CUPS_SOCKET_PATH` 并共享 CUPS 运行目录，非空 socket 配置优先于 TCP 地址且连接失败不回退。与 `docker-compose.web.socket.yml` 合用时，默认将宿主 `/var/run/cups` 只读挂载到 Web 容器，宿主目录可用 `CUPS_SOCKET_DIR` 覆盖。跨容器共享卷示例见 [README](../README.md#通过-unix-socket-连接)。外部 CUPS 负责队列、驱动、USB 接入和 AirPrint 广播，Web 容器没有相关管理命令与本地扫描工具。
 
 仅 Web 目标通过 `SCAN_DEVICES_CACHE_TTL=0` 跳过不适用的扫描启动预热。OFD converter 的 Maven Shade 配置会排除依赖 JAR 的签名文件（`META-INF/*.SF` / `*.DSA` / `*.RSA` / `*.EC`）：合并 JAR 和重写 Manifest 后，原签名不再有效，保留它们会导致 Java 报 `Invalid signature file digest for Manifest main attributes` 并拒绝启动。两种镜像共用这份修正后的 converter。
 

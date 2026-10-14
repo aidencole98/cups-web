@@ -6,6 +6,7 @@ import (
 )
 
 func TestValidatePrinterURI(t *testing.T) {
+	t.Setenv("CUPS_SOCKET_PATH", "")
 	cases := []struct {
 		name    string
 		uri     string

@@ -5,8 +5,9 @@ services:
     ports:
       - "1180:8080"
     environment:
-      # 连接已有 CUPS 服务；也可填同一 Docker 网络中的 CUPS 服务名和端口。
-      CUPS_HOST: ${CUPS_HOST:?请设置外部 CUPS 地址，例如 192.168.1.100:631}
+      # TCP 模式填写外部 CUPS 地址；Socket 模式使用下面的变量并挂载运行目录。
+      CUPS_HOST: ${CUPS_HOST:-localhost:631}
+      CUPS_SOCKET_PATH: ${CUPS_SOCKET_PATH:-}
       TZ: ${TZ:-Asia/Shanghai}
     volumes:
       - ./.data:/data

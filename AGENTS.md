@@ -9,7 +9,7 @@
 - **项目定位**：基于 CUPS 的 Web 打印管理工具，前后端分离
 - **技术栈**：Go 1.26（后端）+ Vue 3（前端）+ SQLite（存储）+ IPP（打印协议）
 - **部署形态**：单二进制（前端 `go:embed`）连接外部 CUPS；**单容器（AIO）Docker 镜像**（`cupsd` + `cups-web` 同容器，内置 LibreOffice + Java 21 + OFD 转换器 + Ghostscript + 打印驱动生态）
-- **仅 Web 镜像**：同一 `Dockerfile` 的 `web-runtime` 目标，保留文档转换依赖，通过 `CUPS_HOST` 连接外部 CUPS；标签带 `-web` 后缀，使用 `docker-compose.web.yml`，不运行 cupsd 或安装驱动/扫描工具。
+- **仅 Web 镜像**：同一 `Dockerfile` 的 `web-runtime` 目标，保留文档转换依赖，通过 `CUPS_HOST` 或 `CUPS_SOCKET_PATH` 连接外部 CUPS；标签带 `-web` 后缀，使用 `docker-compose.web.yml`，不运行 cupsd 或安装驱动/扫描工具。
 
 > ⚠️ **历史形态提示**：仓库曾经是「cups 镜像 + cups-web 镜像」双容器（`cups/` 目录），已在合并提交里删除。现在只有根目录的一份 `Dockerfile` / `entrypoint.sh`，构建脚本在 `scripts/build/`、驱动脚本在 `scripts/driver/`。
 
@@ -159,8 +159,15 @@ cups-web/
 
 - `ipp.ListPrinters` 优先走 IPP `CUPS-Get-Printers`（只点名 4 个 `requested-attributes`，否则每台机器回上百个属性）；操作被拒或对端不是 CUPS 时退回抓 `/printers` HTML 页面，此时 `info`/`location`/`makeAndModel` 为空串。
 - 🚫 必须遍历 `rsp.Groups` 里的 `TagPrinterGroup`：`goipp` 的 `Message.Printer` 只是被压平的第一组，直接用它会在多队列时静默只返回一台。
-- 🚫 URI 一律按 `CUPS_HOST` + 队列名拼，**不要**用响应里的 `printer-uri-supported` —— 那是 cupsd 自报的主机名，容器/跨网段场景下浏览器与服务端未必解析得到。
+- 🚫 URI 一律按配置的主机 + 队列名拼（TCP 用 `CUPS_HOST`，Unix Socket 用占位主机 `localhost:631`），**不要**用响应里的 `printer-uri-supported` —— 那是 cupsd 自报的主机名，容器/跨网段场景下浏览器与服务端未必解析得到。
 - CUPS 建队列不带 `-D` 时 `printer-info` 默认等于队列名，前端 `printerLabel()` 会在两者相同时省略描述，不重复显示。
+
+#### CUPS Unix Socket（issue #120）
+
+- `CUPS_SOCKET_PATH` 非空时优先于 `CUPS_HOST`，必须是绝对路径，启动时检查语法；socket 可以由外部 cupsd 稍后创建。连接失败不回退 TCP。
+- `internal/ipp/connection.go` 统一处理请求 URI，Socket 模式保留队列路径并归一化为 `http://localhost:631`，IPP 属性使用 `ipp://`；任务列表的 `job-printer-uri` 也归一化，供取消操作使用。历史记录和定时任务的旧 TCP URI 复用该连接层。
+- socket 路径只读部署环境变量，禁止用户请求指定路径。Socket 模式仅允许根、打印机列表、打印机/类队列路径；禁止凭据、查询参数、fragment 和路径穿越。`newSafeClient` 固定 dial Unix Socket，保留超时、禁止重定向和响应大小限制；主机/IP SSRF 策略仅适用于 TCP。
+- `docker-compose.web.socket.yml` 为宿主机 socket 目录挂载示例，跨容器可共享运行目录卷。必须挂载整个目录，以适应 cupsd 重建 socket；目录/socket 权限仍由部署方管理。AIO 默认 TCP 启动及本地驱动命令不变。
 
 ### 管理员接口（`/api/admin/*`）
 

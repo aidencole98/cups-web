@@ -26,6 +26,9 @@ func main() {
 	// 默认值留空以便区分"用户未指定"与"显式指定"，最终再回退到 :8080。
 	listenFlag := flag.String("addr", "", "监听地址，如 :8080 或 0.0.0.0:8080 (优先级高于 LISTEN_ADDR 环境变量)")
 	flag.Parse()
+	if err := ipp.ValidateCUPSConfig(); err != nil {
+		log.Fatal("invalid CUPS connection configuration: ", err)
+	}
 
 	addr := *listenFlag
 	if addr == "" {

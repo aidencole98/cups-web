@@ -39,7 +39,8 @@ type PrintJobOptions struct {
 // IPP Print-Job request. It returns a human-readable status or job identifier
 // when available.
 func SendPrintJob(printerURI string, r io.Reader, mime string, username string, jobName string, opts PrintJobOptions) (string, error) {
-	if err := validatePrinterURI(printerURI); err != nil {
+	printerURI, err := printerRequestURI(printerURI)
+	if err != nil {
 		return "", err
 	}
 	// IPP attribute must use ipp:// scheme; HTTP transport uses http://
@@ -196,8 +197,11 @@ func SendPrintJob(printerURI string, r io.Reader, mime string, username string, 
 	httpReq.Header.Set("Content-Type", goipp.ContentType)
 	httpReq.Header.Set("Accept", goipp.ContentType)
 
-	// 打印任务可能上传较大文档，整体超时放宽到 120s；连接层仍受 SSRF 校验。
-	client := newSafeClient(120 * time.Second)
+	// 打印任务可能上传较大文档，整体超时放宽到 120s；TCP 连接仍受 SSRF 校验。
+	client, err := newSafeClient(120 * time.Second)
+	if err != nil {
+		return "", err
+	}
 	log.Printf("[ipp] SendPrintJob: sending HTTP POST to %q", printerURI)
 	resp, err := client.Do(httpReq)
 	if resp != nil {
@@ -209,7 +213,7 @@ func SendPrintJob(printerURI string, r io.Reader, mime string, username string, 
 	}
 	log.Printf("[ipp] SendPrintJob: HTTP response status: %s", resp.Status)
 	if resp.StatusCode/100 != 2 {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(limitedBody(resp.Body))
 		log.Printf("[ipp] SendPrintJob: non-2xx body: %s", string(body))
 		return "", fmt.Errorf("http status: %s", resp.Status)
 	}
@@ -376,7 +380,8 @@ func httpToIppURI(uri string) string {
 // GetPrinterAttributes queries a printer via IPP Get-Printer-Attributes and returns structured info.
 func GetPrinterAttributes(printerURI string) (*PrinterInfo, error) {
 	log.Printf("[ipp] GetPrinterAttributes start, uri=%q", printerURI)
-	if err := validatePrinterURI(printerURI); err != nil {
+	printerURI, err := printerRequestURI(printerURI)
+	if err != nil {
 		return nil, err
 	}
 
@@ -406,7 +411,11 @@ func GetPrinterAttributes(printerURI string) (*PrinterInfo, error) {
 	httpReq.Header.Set("Accept", goipp.ContentType)
 
 	log.Printf("[ipp] sending HTTP POST to %q", printerURI)
-	resp, err := newSafeClient(dialTimeout).Do(httpReq)
+	client, err := newSafeClient(dialTimeout)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(httpReq)
 	if resp != nil {
 		defer resp.Body.Close()
 		log.Printf("[ipp] HTTP response status: %s", resp.Status)
@@ -527,8 +536,15 @@ type Printer struct {
 	MakeAndModel string `json:"makeAndModel"`
 }
 
-// cupsHostPort 把 CUPS_HOST（可能带 scheme、可能不带端口）归一化成 host:port。
+// cupsHostPort 在 Socket 模式返回固定占位主机，否则归一化 CUPS_HOST。
 func cupsHostPort(host string) (string, error) {
+	socketPath, err := cupsSocketPath()
+	if err != nil {
+		return "", err
+	}
+	if socketPath != "" {
+		return socketHost, nil
+	}
 	u := host
 	if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
 		u = "http://" + u
@@ -595,7 +611,11 @@ func listPrintersIPP(hostOnly string) ([]Printer, error) {
 	httpReq.Header.Set("Content-Type", goipp.ContentType)
 	httpReq.Header.Set("Accept", goipp.ContentType)
 
-	resp, err := newSafeClient(dialTimeout).Do(httpReq)
+	client, err := newSafeClient(dialTimeout)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("http post: %w", err)
 	}
@@ -656,7 +676,11 @@ func listPrintersHTML(hostOnly string) ([]Printer, error) {
 	if err := validatePrinterURI(listURL); err != nil {
 		return nil, err
 	}
-	resp, err := newSafeClient(dialTimeout).Get(listURL)
+	client, err := newSafeClient(dialTimeout)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Get(listURL)
 	if err != nil {
 		return nil, fmt.Errorf("fetch printers page: %w", err)
 	}
@@ -689,7 +713,7 @@ func listPrintersHTML(hostOnly string) ([]Printer, error) {
 type Job struct {
 	// ID 是 CUPS 分配的 job-id(整数),取消操作必须用它作为 IPP 属性。
 	ID int `json:"id"`
-	// PrinterURI 是 IPP 上报的 job-printer-uri,前端取消时原样回传。
+	// PrinterURI 是 job-printer-uri，Socket 模式归一化为固定占位主机。前端取消时原样回传。
 	// 注意:CUPS 回给我们的是 ipp:// scheme + cupsd 自报的主机名,某些场景下
 	// 客户端拿到后连不上,所以我们再暴露一个 PrinterName + 由前端与 host 拼出
 	// 可用 URI 的能力。这里两条都留。
@@ -752,6 +776,10 @@ func ListActiveJobs(host string) ([]Job, error) {
 	if err != nil {
 		return nil, err
 	}
+	socketPath, err := cupsSocketPath()
+	if err != nil {
+		return nil, err
+	}
 	reqURL := (&url.URL{Scheme: "http", Host: hostOnly, Path: "/"}).String()
 	if err := validatePrinterURI(reqURL); err != nil {
 		return nil, err
@@ -787,7 +815,11 @@ func ListActiveJobs(host string) ([]Job, error) {
 	httpReq.Header.Set("Content-Type", goipp.ContentType)
 	httpReq.Header.Set("Accept", goipp.ContentType)
 
-	resp, err := newSafeClient(dialTimeout).Do(httpReq)
+	client, err := newSafeClient(dialTimeout)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("http post: %w", err)
 	}
@@ -849,6 +881,13 @@ func ListActiveJobs(host string) ([]Job, error) {
 		if j.ID == 0 {
 			continue
 		}
+		if socketPath != "" && j.PrinterURI != "" {
+			normalized, err := printerRequestURI(j.PrinterURI)
+			if err != nil {
+				return nil, fmt.Errorf("invalid job printer uri: %w", err)
+			}
+			j.PrinterURI = httpToIppURI(normalized)
+		}
 		j.StateText = jobStateText(j.State)
 		jobs = append(jobs, j)
 	}
@@ -870,15 +909,9 @@ func CancelJob(printerURI string, jobID int, username string) error {
 	if jobID <= 0 {
 		return fmt.Errorf("invalid job id: %d", jobID)
 	}
-	if err := validatePrinterURI(printerURI); err != nil {
+	httpTarget, err := printerRequestURI(printerURI)
+	if err != nil {
 		return err
-	}
-	// 请求发到 http:// URI(HTTP 传输层),但 printer-uri 属性用 ipp://。
-	httpTarget := printerURI
-	if strings.HasPrefix(httpTarget, "ipp://") {
-		httpTarget = "http://" + httpTarget[len("ipp://"):]
-	} else if strings.HasPrefix(httpTarget, "ipps://") {
-		httpTarget = "https://" + httpTarget[len("ipps://"):]
 	}
 	ippURI := httpToIppURI(httpTarget)
 
@@ -902,7 +935,11 @@ func CancelJob(printerURI string, jobID int, username string) error {
 	httpReq.Header.Set("Content-Type", goipp.ContentType)
 	httpReq.Header.Set("Accept", goipp.ContentType)
 
-	resp, err := newSafeClient(dialTimeout).Do(httpReq)
+	client, err := newSafeClient(dialTimeout)
+	if err != nil {
+		return err
+	}
+	resp, err := client.Do(httpReq)
 	if err != nil {
 		return fmt.Errorf("http post: %w", err)
 	}

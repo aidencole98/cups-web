@@ -202,6 +202,7 @@ func cupsGetPrintersResponse() ([]byte, error) {
 // TestListPrintersIPP 验证 CUPS-Get-Printers 路径：多队列全都要解析出来、
 // 描述字段去空白、URI 按 host+队列名拼（而不是打印机自报的主机名）。
 func TestListPrintersIPP(t *testing.T) {
+	t.Setenv("CUPS_SOCKET_PATH", "")
 	payload, err := cupsGetPrintersResponse()
 	if err != nil {
 		t.Fatalf("build response: %v", err)
@@ -259,6 +260,7 @@ func TestListPrintersIPP(t *testing.T) {
 // TestListPrintersFallbackToHTML 确认 IPP 操作被拒时会退回抓 /printers 页面，
 // 让远端 CUPS 禁掉 CUPS-Get-Printers 的部署仍然列得出队列（只是没有描述）。
 func TestListPrintersFallbackToHTML(t *testing.T) {
+	t.Setenv("CUPS_SOCKET_PATH", "")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
 			http.Error(w, "forbidden", http.StatusForbidden)
@@ -283,6 +285,7 @@ func TestListPrintersFallbackToHTML(t *testing.T) {
 
 // TestCupsHostPort 覆盖 CUPS_HOST 的几种写法归一化。
 func TestCupsHostPort(t *testing.T) {
+	t.Setenv("CUPS_SOCKET_PATH", "")
 	cases := []struct{ in, want string }{
 		{"localhost", "localhost:631"},
 		{"localhost:631", "localhost:631"},

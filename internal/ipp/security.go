@@ -1,6 +1,7 @@
 package ipp
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -69,7 +70,7 @@ func loadSecConfig() {
 
 // validatePrinterURI 校验用户传入的打印机 URI 的 scheme 与主机名。IP 层的校验
 // 在连接时由 dialControl 完成（防 DNS rebinding），此处只做 scheme / 主机名 /
-// 可选白名单的快速拒绝。
+// 可选白名单的快速拒绝。Unix Socket 模式只检查 URI 结构和资源路径，目标由部署配置固定。
 func validatePrinterURI(raw string) error {
 	loadSecConfig()
 	u, err := url.Parse(strings.TrimSpace(raw))
@@ -82,6 +83,16 @@ func validatePrinterURI(raw string) error {
 	host := u.Hostname()
 	if host == "" {
 		return fmt.Errorf("printer uri missing host")
+	}
+	socketPath, err := cupsSocketPath()
+	if err != nil {
+		return err
+	}
+	if socketPath != "" {
+		if !validSocketRequestURI(u) {
+			return fmt.Errorf("invalid CUPS socket request uri")
+		}
+		return nil
 	}
 	if len(hostAllowlist) > 0 && !hostAllowlist[strings.ToLower(host)] {
 		return fmt.Errorf("printer host not allowed")
@@ -131,9 +142,13 @@ func dialControl(_, address string, _ syscall.RawConn) error {
 	return nil
 }
 
-// newSafeClient 构造一个带 SSRF 防护的 HTTP 客户端：连接层 IP 校验、禁止跟随
-// 重定向、整体超时。timeout 为整个请求（含请求体上传）的超时上限。
-func newSafeClient(timeout time.Duration) *http.Client {
+// newSafeClient 使用部署配置的固定 Unix Socket，或带 SSRF 防护的 TCP 连接。
+// 两种模式均禁止重定向并保留超时；socket 失败不会回退到 TCP。
+func newSafeClient(timeout time.Duration) (*http.Client, error) {
+	socketPath, err := cupsSocketPath()
+	if err != nil {
+		return nil, err
+	}
 	dialer := &net.Dialer{
 		Timeout:   dialTimeout,
 		KeepAlive: 30 * time.Second,
@@ -147,13 +162,19 @@ func newSafeClient(timeout time.Duration) *http.Client {
 		MaxIdleConns:          10,
 		IdleConnTimeout:       30 * time.Second,
 	}
+	if socketPath != "" {
+		dialer.Control = nil // Unix Socket 不做 IP 校验，目标固定为部署配置的路径。
+		transport.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return dialer.DialContext(ctx, "unix", socketPath)
+		}
+	}
 	return &http.Client{
 		Timeout:   timeout,
 		Transport: transport,
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
-	}
+	}, nil
 }
 
 // limitedBody 返回一个受大小限制的响应体读取器，防止超大响应耗尽内存。
