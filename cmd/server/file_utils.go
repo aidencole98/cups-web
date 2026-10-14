@@ -106,8 +106,13 @@ func saveUploadedFile(file io.Reader, filename string, baseDir string) (string, 
 	if err != nil {
 		return "", "", err
 	}
-	defer out.Close()
 	if _, err := io.Copy(out, file); err != nil {
+		_ = out.Close()
+		_ = os.Remove(absPath)
+		return "", "", err
+	}
+	if err := out.Close(); err != nil {
+		_ = os.Remove(absPath)
 		return "", "", err
 	}
 	relPath := filepath.ToSlash(filepath.Join(subDir, storedName))

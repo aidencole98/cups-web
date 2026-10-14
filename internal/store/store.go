@@ -203,6 +203,19 @@ func (s *Store) migrate(ctx context.Context) error {
 			return fmt.Errorf("migrate: %w", err)
 		}
 	}
+	// Issue #121：队列为空时保留旧任务反复打印单文件的语义。
+	for _, col := range []string{
+		"files_json TEXT NOT NULL DEFAULT '[]'",
+		"next_file_index INTEGER NOT NULL DEFAULT 0",
+		"submitted_count INTEGER NOT NULL DEFAULT 0",
+		"loop INTEGER NOT NULL DEFAULT 0",
+		"start_date TEXT NOT NULL DEFAULT ''",
+		"history_json TEXT NOT NULL DEFAULT '[]'",
+	} {
+		if err := addColumnIfMissing(ctx, s.DB, "scheduled_prints", col); err != nil {
+			return fmt.Errorf("migrate scheduled prints: %w", err)
+		}
+	}
 	if err := addColumnIfMissing(ctx, s.DB, "users", "protected INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}

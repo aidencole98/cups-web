@@ -61,43 +61,29 @@ func schedulerTick(s *store.Store, uploads string) {
 	}
 }
 
-// runScheduledTask 执行一条到期任务：先算下一次 next_run_at 并落库（避免失败反复重跑），
-// 再实际发送到 IPP。过期任务（比进程启动时早于 now 的执行点）按 skipped 处理，不补跑。
+// runScheduledTask 与手动执行共用任务锁，拿锁后重新读取，防止使用过期扫描结果。
 func runScheduledTask(s *store.Store, uploads string, task store.ScheduledPrint, now time.Time) {
-	// 判定是否为"错过窗口"：任务 next_run_at 早于 now - 2 分钟视为宕机期间错过。
-	// 2 分钟窗口足够容忍 30s 扫描心跳的抖动，同时避免"下班后自动打印上周报表"。
-	nextRunTime, parseErr := time.Parse(time.RFC3339, task.NextRunAt)
-	missed := parseErr == nil && nextRunTime.Before(now.Add(-2*time.Minute))
-
-	runAtUTC := now.UTC().Format(time.RFC3339)
-
-	if missed {
-		nextRunAt, stillEnabled := advanceNextRun(task, now)
-		if err := persistScheduledResult(s, task.ID, runAtUTC, "skipped", "错过执行窗口，已跳过", nextRunAt, stillEnabled); err != nil {
-			log.Printf("[scheduler] persist skipped failed: id=%d err=%v", task.ID, err)
-		}
-		log.Printf("[scheduler] task #%d skipped (missed window, next=%s)", task.ID, nextRunAt)
+	if !acquireScheduledTask(task.ID, true) {
 		return
 	}
-
-	// 先推进 next_run_at 并落库，再执行——避免长任务过程中被再次扫到；也让失败
-	// 不至于每 30s 反复重跑，等到下一个自然触发点再重试。
-	nextRunAt, stillEnabled := advanceNextRun(task, now)
-	if err := persistScheduledResult(s, task.ID, task.LastRunAt, task.LastStatus, task.LastError, nextRunAt, stillEnabled); err != nil {
-		log.Printf("[scheduler] persist next_run_at failed: id=%d err=%v", task.ID, err)
+	defer releaseScheduledTask(task.ID)
+	var current store.ScheduledPrint
+	if err := s.WithTx(context.Background(), true, func(tx *sql.Tx) error {
+		var err error
+		current, err = store.GetScheduledPrintByID(context.Background(), tx, task.ID)
+		return err
+	}); err != nil {
 		return
 	}
-
-	status, execErr := executeScheduled(s, uploads, task)
-	errMsg := ""
-	if execErr != nil {
-		errMsg = execErr.Error()
-		log.Printf("[scheduler] task #%d failed: %v", task.ID, execErr)
-	} else {
-		log.Printf("[scheduler] task #%d printed (next=%s enabled=%v)", task.ID, nextRunAt, stillEnabled)
+	if !current.Enabled || scheduledQueueComplete(current) {
+		return
 	}
-	if err := persistScheduledResult(s, task.ID, runAtUTC, status, errMsg, nextRunAt, stillEnabled); err != nil {
-		log.Printf("[scheduler] persist result failed: id=%d err=%v", task.ID, err)
+	next, err := time.Parse(time.RFC3339, current.NextRunAt)
+	if err != nil || next.After(now) {
+		return
+	}
+	if err := executeScheduledOccurrence(s, uploads, current, now, false, executeScheduled); err != nil {
+		log.Printf("[scheduler] task #%d failed: %v", current.ID, err)
 	}
 }
 
@@ -341,6 +327,15 @@ func advanceNextRun(task store.ScheduledPrint, from time.Time) (string, bool) {
 func computeNextRun(task store.ScheduledPrint, after time.Time) (time.Time, bool) {
 	loc := time.Local
 	after = after.In(loc)
+	if task.StartDate != "" {
+		start, err := time.ParseInLocation("2006-01-02", task.StartDate, loc)
+		if err != nil {
+			return time.Time{}, false
+		}
+		if after.Before(start) {
+			after = start.Add(-time.Nanosecond)
+		}
+	}
 
 	switch task.ScheduleType {
 	case store.ScheduleOnce:
@@ -431,6 +426,17 @@ func parseScheduleTime(s string) (int, int, bool) {
 // ensureScheduleDefaults 修剪 store.ScheduledPrint 字段，保证枚举合法。
 // 保持业务逻辑集中在一处，handler 与 scheduler 都可以调用。
 func ensureScheduleDefaults(rec *store.ScheduledPrint) error {
+	if rec.StartDate != "" {
+		if _, err := time.Parse("2006-01-02", rec.StartDate); err != nil {
+			return errors.New("start_date 必须是 YYYY-MM-DD")
+		}
+	}
+	if len(rec.Files) > 0 && rec.ScheduleType == store.ScheduleOnce {
+		return errors.New("照片队列请选择每天、每周或每月")
+	}
+	if scheduledQueueComplete(*rec) && rec.Enabled {
+		return errors.New("照片已全部提交，请新建任务；或开启循环后继续")
+	}
 	if rec.PrinterURI == "" {
 		return errors.New("printer 不能为空")
 	}

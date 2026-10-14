@@ -130,6 +130,7 @@ func main() {
 	protected.HandleFunc("/scheduled-prints/{id:[0-9]+}", scheduledUpdateHandler).Methods("PUT")
 	protected.HandleFunc("/scheduled-prints/{id:[0-9]+}", scheduledDeleteHandler).Methods("DELETE")
 	protected.HandleFunc("/scheduled-prints/{id:[0-9]+}/run", scheduledRunNowHandler).Methods("POST")
+	protected.HandleFunc("/scheduled-prints/{id:[0-9]+}/files/{index:[0-9]+}", scheduledThumbnailHandler).Methods("GET")
 	// CUPS 任务列表 / 取消:任何登录用户可用,权限由 CUPS 按 owner 校验(issue #60)。
 	protected.HandleFunc("/cups-jobs", cupsJobsHandler).Methods("GET")
 	protected.HandleFunc("/cups-jobs/cancel", cupsCancelJobHandler).Methods("POST")

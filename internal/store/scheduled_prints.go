@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -14,6 +15,21 @@ const (
 	ScheduleWeekly  = "weekly"
 	ScheduleMonthly = "monthly"
 )
+
+// ScheduledFile 保存固定顺序的照片和缩略图，路径均相对 uploads。
+type ScheduledFile struct {
+	Filename      string `json:"filename"`
+	StoredPath    string `json:"storedPath"`
+	ThumbnailPath string `json:"thumbnailPath"`
+}
+
+// ScheduledRun 只保留最近 20 次执行；printed 表示 CUPS 接受，非物理出纸。
+type ScheduledRun struct {
+	Filename string `json:"filename"`
+	Status   string `json:"status"`
+	Error    string `json:"error"`
+	RunAt    string `json:"runAt"`
+}
 
 // ScheduledPrint 定时打印任务：文件 + 完整打印参数 + 触发策略。
 // 与 print_jobs 的字段一一对应，避免执行时再猜默认值。
@@ -53,6 +69,13 @@ type ScheduledPrint struct {
 	LastError       string
 	Enabled         bool
 
+	Files          []ScheduledFile
+	NextFileIndex  int
+	SubmittedCount int
+	Loop           bool
+	StartDate      string
+	History        []ScheduledRun
+
 	CreatedAt string
 	UpdatedAt string
 }
@@ -62,37 +85,51 @@ const scheduledPrintColumns = `s.id, s.user_id, u.username, s.name, s.printer_ur
 	s.page_range, s.page_set, s.mirror, s.watermark_text, s.number_up, s.number_up_layout, s.page_border,
 	s.schedule_type, s.schedule_time, s.schedule_weekday, s.schedule_day,
 	s.run_at, s.next_run_at, s.last_run_at, s.last_status, s.last_error, s.enabled,
-	s.created_at, s.updated_at`
+	s.created_at, s.updated_at, s.files_json, s.next_file_index, s.submitted_count, s.loop, s.start_date, s.history_json`
 
 func scanScheduledPrint(sc scanner) (ScheduledPrint, error) {
 	var rec ScheduledPrint
+	var filesJSON, historyJSON string
 	err := sc.Scan(
 		&rec.ID, &rec.UserID, &rec.Username, &rec.Name, &rec.PrinterURI, &rec.Filename, &rec.StoredPath,
 		&rec.IsDuplex, &rec.IsColor, &rec.Copies, &rec.Orientation, &rec.PaperSize, &rec.PaperType, &rec.MediaSource, &rec.PrintScaling,
 		&rec.PageRange, &rec.PageSet, &rec.Mirror, &rec.WatermarkText, &rec.NumberUp, &rec.NumberUpLayout, &rec.PageBorder,
 		&rec.ScheduleType, &rec.ScheduleTime, &rec.ScheduleWeekday, &rec.ScheduleDay,
 		&rec.RunAt, &rec.NextRunAt, &rec.LastRunAt, &rec.LastStatus, &rec.LastError, &rec.Enabled,
-		&rec.CreatedAt, &rec.UpdatedAt,
+		&rec.CreatedAt, &rec.UpdatedAt, &filesJSON, &rec.NextFileIndex, &rec.SubmittedCount, &rec.Loop, &rec.StartDate, &historyJSON,
 	)
-	return rec, err
+	if err != nil {
+		return rec, err
+	}
+	if err := json.Unmarshal([]byte(filesJSON), &rec.Files); err != nil {
+		return rec, err
+	}
+	if err := json.Unmarshal([]byte(historyJSON), &rec.History); err != nil {
+		return rec, err
+	}
+	return rec, nil
 }
 
 // InsertScheduledPrint 插入一条定时任务，返回新 ID。
 func InsertScheduledPrint(ctx context.Context, tx *sql.Tx, rec *ScheduledPrint) (int64, error) {
+	filesJSON, err := json.Marshal(rec.Files)
+	if err != nil {
+		return 0, err
+	}
 	res, err := tx.ExecContext(ctx, `INSERT INTO scheduled_prints (
 		user_id, name, printer_uri, filename, stored_path,
 		is_duplex, is_color, copies, orientation, paper_size, paper_type, media_source, print_scaling,
 		page_range, page_set, mirror, watermark_text, number_up, number_up_layout, page_border,
 		schedule_type, schedule_time, schedule_weekday, schedule_day,
 		run_at, next_run_at, last_run_at, last_status, last_error, enabled,
-		created_at, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		created_at, updated_at, files_json, loop, start_date
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		rec.UserID, rec.Name, rec.PrinterURI, rec.Filename, rec.StoredPath,
 		rec.IsDuplex, rec.IsColor, rec.Copies, rec.Orientation, rec.PaperSize, rec.PaperType, rec.MediaSource, rec.PrintScaling,
 		rec.PageRange, rec.PageSet, rec.Mirror, rec.WatermarkText, rec.NumberUp, rec.NumberUpLayout, rec.PageBorder,
 		rec.ScheduleType, rec.ScheduleTime, rec.ScheduleWeekday, rec.ScheduleDay,
 		rec.RunAt, rec.NextRunAt, rec.LastRunAt, rec.LastStatus, rec.LastError, rec.Enabled,
-		rec.CreatedAt, rec.UpdatedAt,
+		rec.CreatedAt, rec.UpdatedAt, string(filesJSON), rec.Loop, rec.StartDate,
 	)
 	if err != nil {
 		return 0, err
@@ -108,13 +145,13 @@ func UpdateScheduledPrint(ctx context.Context, tx *sql.Tx, rec *ScheduledPrint) 
 		is_duplex = ?, is_color = ?, copies = ?, orientation = ?, paper_size = ?, paper_type = ?, media_source = ?, print_scaling = ?,
 		page_range = ?, page_set = ?, mirror = ?, watermark_text = ?, number_up = ?, number_up_layout = ?, page_border = ?,
 		schedule_type = ?, schedule_time = ?, schedule_weekday = ?, schedule_day = ?,
-		run_at = ?, next_run_at = ?, enabled = ?, updated_at = ?
+		run_at = ?, next_run_at = ?, enabled = ?, updated_at = ?, loop = ?, start_date = ?, next_file_index = ?
 		WHERE id = ?`,
 		rec.Name, rec.PrinterURI,
 		rec.IsDuplex, rec.IsColor, rec.Copies, rec.Orientation, rec.PaperSize, rec.PaperType, rec.MediaSource, rec.PrintScaling,
 		rec.PageRange, rec.PageSet, rec.Mirror, rec.WatermarkText, rec.NumberUp, rec.NumberUpLayout, rec.PageBorder,
 		rec.ScheduleType, rec.ScheduleTime, rec.ScheduleWeekday, rec.ScheduleDay,
-		rec.RunAt, rec.NextRunAt, rec.Enabled, rec.UpdatedAt,
+		rec.RunAt, rec.NextRunAt, rec.Enabled, rec.UpdatedAt, rec.Loop, rec.StartDate, rec.NextFileIndex,
 		rec.ID,
 	)
 	return err
@@ -220,4 +257,18 @@ func ListDueScheduledPrints(ctx context.Context, tx *sql.Tx, nowUTC string) ([]S
 		records = append(records, rec)
 	}
 	return records, rows.Err()
+}
+
+// SaveScheduledExecution 原子保存结果、队列进度和最近执行历史。
+func SaveScheduledExecution(ctx context.Context, tx *sql.Tx, rec *ScheduledPrint) error {
+	historyJSON, err := json.Marshal(rec.History)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE scheduled_prints SET
+ last_run_at = ?, last_status = ?, last_error = ?, next_run_at = ?, enabled = ?,
+ next_file_index = ?, submitted_count = ?, history_json = ?, updated_at = ? WHERE id = ?`,
+		rec.LastRunAt, rec.LastStatus, rec.LastError, rec.NextRunAt, rec.Enabled,
+		rec.NextFileIndex, rec.SubmittedCount, string(historyJSON), nowUTC(), rec.ID)
+	return err
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -23,7 +24,21 @@ import (
 // 避免用户设的保留期把仍在使用的源文件误删。
 const scheduledSubDir = "scheduled"
 
+type scheduledFileResponse struct {
+	Filename     string `json:"filename"`
+	ThumbnailURL string `json:"thumbnailUrl"`
+}
+
 type scheduledPrintResponse struct {
+	Files          []scheduledFileResponse `json:"files"`
+	NextFileIndex  int                     `json:"nextFileIndex"`
+	SubmittedCount int                     `json:"submittedCount"`
+	Loop           bool                    `json:"loop"`
+	StartDate      string                  `json:"startDate"`
+	Completed      bool                    `json:"completed"`
+	Running        bool                    `json:"running"`
+	History        []store.ScheduledRun    `json:"history"`
+
 	ID         int64  `json:"id"`
 	UserID     int64  `json:"userId"`
 	Username   string `json:"username"`
@@ -63,7 +78,19 @@ type scheduledPrintResponse struct {
 }
 
 func mapScheduledPrint(rec store.ScheduledPrint) scheduledPrintResponse {
+	files := make([]scheduledFileResponse, 0, len(rec.Files))
+	for i, file := range rec.Files {
+		files = append(files, scheduledFileResponse{Filename: file.Filename,
+			ThumbnailURL: fmt.Sprintf("/api/scheduled-prints/%d/files/%d", rec.ID, i)})
+	}
+	history := rec.History
+	if history == nil {
+		history = []store.ScheduledRun{}
+	}
 	return scheduledPrintResponse{
+		Files: files, NextFileIndex: rec.NextFileIndex, SubmittedCount: rec.SubmittedCount,
+		Loop: rec.Loop, StartDate: rec.StartDate, Completed: scheduledQueueComplete(rec),
+		Running: scheduledTaskRunning(rec.ID), History: history,
 		ID:         rec.ID,
 		UserID:     rec.UserID,
 		Username:   rec.Username,
@@ -140,7 +167,7 @@ func scheduledCreateHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	applyUploadLimit(w, r)
-	if err := r.ParseMultipartForm(512 << 20); err != nil {
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		if isMaxBytesError(err) {
 			writeJSONError(w, http.StatusRequestEntityTooLarge, "文件超出管理员设置的大小上限")
 			return
@@ -148,26 +175,75 @@ func scheduledCreateHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid multipart form")
 		return
 	}
-	file, fh, err := r.FormFile("file")
-	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, "missing file field")
+
+	defer r.MultipartForm.RemoveAll()
+	headers := r.MultipartForm.File["files"]
+	queue := len(headers) > 0
+	if queue && len(r.MultipartForm.File["file"]) > 0 {
+		writeJSONError(w, http.StatusBadRequest, "file 与 files 不能混用")
 		return
 	}
-	defer file.Close()
-
-	baseDir := scheduledBaseDir(uploadDir, sess.UserID)
-	storedRel, _, err := saveUploadedFile(file, fh.Filename, baseDir)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "failed to save file")
+	if !queue {
+		headers = r.MultipartForm.File["file"]
+	}
+	if len(headers) == 0 || len(headers) > 100 || (!queue && len(headers) != 1) {
+		writeJSONError(w, http.StatusBadRequest, "请选择文件；照片队列最多 100 张")
 		return
 	}
-	relInUploads := filepath.ToSlash(filepath.Join(scheduledSubDir, strconv.FormatInt(sess.UserID, 10), storedRel))
-
-	rec, err := buildScheduledRecordFromForm(r, sess.UserID, fh.Filename, relInUploads)
-	if err != nil {
-		_ = os.Remove(filepath.Join(baseDir, filepath.FromSlash(storedRel)))
+	if _, err := buildScheduledRecordFromForm(r, sess.UserID, headers[0].Filename, "pending"); err != nil {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	if queue && r.FormValue("schedule_type") == store.ScheduleOnce {
+		writeJSONError(w, http.StatusBadRequest, "照片队列请选择每天、每周或每月")
+		return
+	}
+	var saved []string
+	keep := false
+	defer func() {
+		if !keep {
+			removeScheduledFiles(uploadDir, saved)
+		}
+	}()
+	baseDir := scheduledBaseDir(uploadDir, sess.UserID)
+	files := make([]store.ScheduledFile, 0, len(headers))
+	for _, fh := range headers {
+		f, err := fh.Open()
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "无法读取上传文件")
+			return
+		}
+		storedRel, absPath, saveErr := saveUploadedFile(f, fh.Filename, baseDir)
+		_ = f.Close()
+		if saveErr != nil {
+			writeJSONError(w, http.StatusInternalServerError, "failed to save file")
+			return
+		}
+		rel := filepath.ToSlash(filepath.Join(scheduledSubDir, strconv.FormatInt(sess.UserID, 10), storedRel))
+		saved = append(saved, rel)
+		item := store.ScheduledFile{Filename: fh.Filename, StoredPath: rel}
+		if queue {
+			_, err := createScheduledThumbnail(absPath)
+			if err != nil {
+				writeJSONError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			item.ThumbnailPath = rel + ".thumb.jpg"
+			saved = append(saved, item.ThumbnailPath)
+		}
+		files = append(files, item)
+	}
+	rec, err := buildScheduledRecordFromForm(r, sess.UserID, files[0].Filename, files[0].StoredPath)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if queue {
+		rec.Files = files
+		if err := ensureScheduleDefaults(&rec); err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 
 	var newID int64
@@ -180,11 +256,11 @@ func scheduledCreateHandler(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	if err != nil {
-		_ = os.Remove(filepath.Join(baseDir, filepath.FromSlash(storedRel)))
 		writeJSONError(w, http.StatusInternalServerError, "failed to save scheduled print")
 		return
 	}
 
+	keep = true
 	var created store.ScheduledPrint
 	if err := appStore.WithTx(r.Context(), true, func(tx *sql.Tx) error {
 		c, err := store.GetScheduledPrintByID(r.Context(), tx, newID)
@@ -219,6 +295,16 @@ func scheduledUpdateHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if _, err := accessibleScheduledTask(r, id); err != nil {
+		writeScheduledAccessError(w, err)
+		return
+	}
+	if !acquireScheduledTask(id, false) {
+		writeJSONError(w, http.StatusConflict, "任务正在执行，请稍后再试")
+		return
+	}
+	defer releaseScheduledTask(id)
+
 	err = appStore.WithTx(r.Context(), false, func(tx *sql.Tx) error {
 		rec, err := store.GetScheduledPrintByID(r.Context(), tx, id)
 		if err != nil {
@@ -227,19 +313,13 @@ func scheduledUpdateHandler(w http.ResponseWriter, r *http.Request) {
 		if sess.Role != store.RoleAdmin && rec.UserID != sess.UserID {
 			return errForbidden
 		}
+		previous := rec
 		applyScheduledPayload(&rec, payload)
 		if err := ensureScheduleDefaults(&rec); err != nil {
 			return err
 		}
-		next, ok := computeNextRun(rec, time.Now())
-		if !ok {
-			return errors.New("无法计算下一次执行时间")
-		}
-		rec.NextRunAt = next.UTC().Format(time.RFC3339)
-		if rec.ScheduleType == store.ScheduleOnce {
-			rec.RunAt = rec.NextRunAt
-		} else {
-			rec.RunAt = ""
+		if err := refreshScheduledNextRun(&rec, previous, time.Now()); err != nil {
+			return err
 		}
 		rec.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 		return store.UpdateScheduledPrint(r.Context(), tx, &rec)
@@ -284,7 +364,17 @@ func scheduledDeleteHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var stored string
+	var stored []string
+	if _, err := accessibleScheduledTask(r, id); err != nil {
+		writeScheduledAccessError(w, err)
+		return
+	}
+	if !acquireScheduledTask(id, false) {
+		writeJSONError(w, http.StatusConflict, "任务正在执行，请稍后再试")
+		return
+	}
+	defer releaseScheduledTask(id)
+
 	err = appStore.WithTx(r.Context(), false, func(tx *sql.Tx) error {
 		rec, err := store.GetScheduledPrintByID(r.Context(), tx, id)
 		if err != nil {
@@ -293,7 +383,10 @@ func scheduledDeleteHandler(w http.ResponseWriter, r *http.Request) {
 		if sess.Role != store.RoleAdmin && rec.UserID != sess.UserID {
 			return errForbidden
 		}
-		stored = rec.StoredPath
+		stored = append(stored, rec.StoredPath)
+		for _, file := range rec.Files {
+			stored = append(stored, file.StoredPath, file.ThumbnailPath)
+		}
 		return store.DeleteScheduledPrint(r.Context(), tx, id)
 	})
 	if err != nil {
@@ -308,73 +401,118 @@ func scheduledDeleteHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "failed to delete scheduled print")
 		return
 	}
-	if stored != "" {
-		abs := filepath.Join(uploadDir, filepath.FromSlash(stored))
-		_ = os.Remove(abs)
-	}
+	removeScheduledFiles(uploadDir, stored)
 	writeJSON(w, map[string]bool{"ok": true})
 }
 
-// scheduledRunNowHandler 触发一次立即执行。执行是同步的，避免用户以为"没反应"，
-// 但会带 5 分钟超时（executeScheduled 内部）。
+// 手动执行异步返回 202，转换与打印独立于 HTTP 120s WriteTimeout。
 func scheduledRunNowHandler(w http.ResponseWriter, r *http.Request) {
-	sess, err := auth.GetSession(r)
-	if err != nil {
-		writeJSONError(w, http.StatusUnauthorized, "unauthorized")
-		return
-	}
 	id, err := strconv.ParseInt(mux.Vars(r)["id"], 10, 64)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
+	if _, err := accessibleScheduledTask(r, id); err != nil {
+		writeScheduledAccessError(w, err)
+		return
+	}
+	if !acquireScheduledTask(id, true) {
+		writeJSONError(w, http.StatusConflict, "任务正在执行，请勿重复提交")
+		return
+	}
+	task, err := accessibleScheduledTask(r, id)
+	if err != nil {
+		releaseScheduledTask(id)
+		writeScheduledAccessError(w, err)
+		return
+	}
+	if scheduledQueueComplete(task) {
+		releaseScheduledTask(id)
+		writeJSONError(w, http.StatusConflict, "照片已全部提交")
+		return
+	}
+	go func() {
+		defer releaseScheduledTask(id)
+		if err := executeScheduledOccurrence(appStore, uploadDir, task, time.Now(), true, executeScheduled); err != nil {
+			log.Printf("[scheduler] manual task #%d failed: %v", id, err)
+		}
+	}()
+	writeJSONStatus(w, http.StatusAccepted, map[string]any{"ok": true, "status": "running"})
+}
 
+func accessibleScheduledTask(r *http.Request, id int64) (store.ScheduledPrint, error) {
+	sess, err := auth.GetSession(r)
+	if err != nil {
+		return store.ScheduledPrint{}, errUnauthenticatedSchedule
+	}
 	var task store.ScheduledPrint
 	err = appStore.WithTx(r.Context(), true, func(tx *sql.Tx) error {
-		rec, err := store.GetScheduledPrintByID(r.Context(), tx, id)
-		if err != nil {
-			return err
-		}
-		if sess.Role != store.RoleAdmin && rec.UserID != sess.UserID {
-			return errForbidden
-		}
-		task = rec
-		return nil
+		var err error
+		task, err = store.GetScheduledPrintByID(r.Context(), tx, id)
+		return err
 	})
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			writeJSONError(w, http.StatusNotFound, "not found")
-			return
-		}
-		if errors.Is(err, errForbidden) {
-			writeJSONError(w, http.StatusForbidden, "forbidden")
-			return
-		}
-		writeJSONError(w, http.StatusInternalServerError, "failed to load scheduled print")
-		return
+	if err == nil && sess.Role != store.RoleAdmin && task.UserID != sess.UserID {
+		err = errForbidden
 	}
+	return task, err
+}
 
-	status, execErr := executeScheduled(appStore, uploadDir, task)
-	errMsg := ""
-	if execErr != nil {
-		errMsg = execErr.Error()
+var errUnauthenticatedSchedule = errors.New("unauthorized")
+
+func writeScheduledAccessError(w http.ResponseWriter, err error) {
+	status := http.StatusInternalServerError
+	message := "无法读取定时任务"
+	switch {
+	case errors.Is(err, errUnauthenticatedSchedule):
+		status, message = http.StatusUnauthorized, "unauthorized"
+	case errors.Is(err, sql.ErrNoRows):
+		status, message = http.StatusNotFound, "not found"
+	case errors.Is(err, errForbidden):
+		status, message = http.StatusForbidden, "forbidden"
 	}
-	_ = appStore.WithTx(r.Context(), false, func(tx *sql.Tx) error {
-		return store.UpdateScheduledPrintAfterRun(r.Context(), tx, id,
-			time.Now().UTC().Format(time.RFC3339), status, errMsg, task.NextRunAt, task.Enabled)
-	})
-	if execErr != nil {
-		writeJSONError(w, http.StatusInternalServerError, execErr.Error())
+	writeJSONError(w, status, message)
+}
+
+// 缩略图沿用 Session/API Key 鉴权，并只允许读本人或管理员可见的任务。
+func scheduledThumbnailHandler(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(mux.Vars(r)["id"], 10, 64)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	writeJSON(w, map[string]any{"ok": true, "status": status})
+	task, err := accessibleScheduledTask(r, id)
+	if err != nil {
+		writeScheduledAccessError(w, err)
+		return
+	}
+	index, err := strconv.Atoi(mux.Vars(r)["index"])
+	if err != nil || index < 0 || index >= len(task.Files) {
+		writeJSONError(w, http.StatusNotFound, "not found")
+		return
+	}
+	f, err := os.OpenInRoot(uploadDir, filepath.FromSlash(task.Files[index].ThumbnailPath))
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, "not found")
+		return
+	}
+	defer f.Close()
+	stat, err := f.Stat()
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "无法读取缩略图")
+		return
+	}
+	w.Header().Set("Content-Type", "image/jpeg")
+	w.Header().Set("Cache-Control", "private, no-cache")
+	http.ServeContent(w, r, "thumbnail.jpg", stat.ModTime(), f)
 }
 
 // scheduledUpdatePayload 是 PUT 允许覆盖的字段。文件与用户不变。
 type scheduledUpdatePayload struct {
-	Name       string `json:"name"`
-	PrinterURI string `json:"printerUri"`
-	Enabled    *bool  `json:"enabled"`
+	Loop       *bool   `json:"loop"`
+	StartDate  *string `json:"startDate"`
+	Name       string  `json:"name"`
+	PrinterURI string  `json:"printerUri"`
+	Enabled    *bool   `json:"enabled"`
 
 	IsDuplex       bool   `json:"isDuplex"`
 	IsColor        bool   `json:"isColor"`
@@ -400,6 +538,15 @@ type scheduledUpdatePayload struct {
 }
 
 func applyScheduledPayload(rec *store.ScheduledPrint, p scheduledUpdatePayload) {
+	if p.StartDate != nil {
+		rec.StartDate = *p.StartDate
+	}
+	if p.Loop != nil {
+		if *p.Loop && scheduledQueueComplete(*rec) {
+			rec.NextFileIndex = 0
+		}
+		rec.Loop = *p.Loop
+	}
 	rec.Name = strings.TrimSpace(p.Name)
 	rec.PrinterURI = p.PrinterURI
 	rec.IsDuplex = p.IsDuplex
@@ -448,7 +595,8 @@ func buildScheduledRecordFromForm(r *http.Request, userID int64, filename, store
 	}
 
 	rec := store.ScheduledPrint{
-		UserID:     userID,
+		UserID: userID,
+		Loop:   getBool("loop"), StartDate: getStr("start_date"),
 		Name:       strings.TrimSpace(getStr("name")),
 		PrinterURI: getStr("printer"),
 		Filename:   filename,

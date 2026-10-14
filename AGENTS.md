@@ -122,6 +122,10 @@ cups-web/
 | POST | `/api/convert` | 文档 → PDF（单文件 `file` / 多图 `files`） |
 | POST | `/api/print` | 提交打印 |
 | POST | `/api/compose` | 多页拼版 |
+| GET/POST | `/api/scheduled-prints` | 定时任务列表 / 创建 |
+| PUT/DELETE | `/api/scheduled-prints/{id}` | 更新 / 删除定时任务 |
+| POST | `/api/scheduled-prints/{id}/run` | 异步提前执行，返回 `202 {ok, status:"running"}` |
+| GET | `/api/scheduled-prints/{id}/files/{index}` | 照片队列缩略图（本人或管理员） |
 | GET | `/api/print-records` | 打印记录 |
 | GET | `/api/print-records/{id}/file` | 下载原始文件 |
 | POST | `/api/print-records/{id}/reprint` | 重打参数预填 |
@@ -267,6 +271,15 @@ SQLite，`WAL` + `foreign_keys`；迁移在 `store.go::migrate()` 中用幂等 S
 ### `settings`
 
 KV 表。当前键：`retention_days`（`0` = 永久）、`session_hash_key` / `session_block_key`。
+
+### 照片定时队列（issue #121）
+
+- `scheduled_prints` 复用现有打印参数和触发策略，幂等新增 `files_json`（按顺序存原图及缩略图相对路径）、`next_file_index`、`submitted_count`、`loop`、`start_date`、`history_json`（最近 20 次执行）。
+- 创建沿用 multipart：旧 `file` 字段保持单文件语义；新 `files` 字段表示照片队列（1–100 张 JPG/PNG/GIF），每次只提交一张；两者不能混用。队列支持 daily/weekly/monthly，`start_date` 为服务器本地日期，`loop=true` 循环，否则完成后停用。
+- 自动执行、手动执行、编辑、删除共享任务互斥；手动执行用 Background goroutine，页面通过列表的 `running` 字段轮询。成功提交才推进照片，失败/错过窗口不推进；手动队列执行消费下一次计划，保留暂停状态。
+- 修改打印参数或暂停时保留下次执行点；恢复时只重算已过期的执行点，避免撤销提前打印后的计划顺延。编辑页面保留未展示的打印参数，列表忽略较早请求的迟到响应。
+- 提交前将队列持久化为 `enabled=0, last_status=running`，成功或明确失败后原子写入结果、进度并恢复计划；服务中断或结果落库失败时保留暂停，防止自动重复提交不确定结果。
+- 原图和缩略图存于 `uploads/scheduled/`，沿用历史清理豁免；缩略图读取、删除用 `os.OpenInRoot` / `os.OpenRoot` 限制路径。原有单文件任务不受队列完成规则影响。
 
 ## 🔐 认证与安全
 
