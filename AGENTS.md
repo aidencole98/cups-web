@@ -118,6 +118,7 @@ cups-web/
 | GET | `/api/me` | 当前用户信息 |
 | GET | `/api/printers` | 列出打印机 |
 | GET | `/api/printer-info?uri=<uri>` | 打印机属性 |
+| GET | `/api/printer-options?uri=<uri>&force=1` | 驱动纸张 / 介质 / 质量选项，force 可选 |
 | POST | `/api/estimate` | 估算页数 |
 | POST | `/api/convert` | 文档 → PDF（单文件 `file` / 多图 `files`） |
 | POST | `/api/print` | 提交打印 |
@@ -210,6 +211,7 @@ cups-web/
 | `copies` | int | 份数 |
 | `orientation` | `portrait` / `landscape` | 方向 |
 | `paper_size` | `A4` / `A3` / `5inch`…`10inch` | 纸张尺寸 |
+| `driver_options` | JSON string | `pageSize` / `mediaType` / `quality`，从 `/api/printer-options` 选取，服务端校验并保存快照；覆盖对应传统参数 |
 | `paper_type` | `plain` / `photo` / … / `auto` | 纸张类型 |
 | `media_source` | string | 进纸盒（`auto` 不发送） |
 | `print_scaling` | `auto` / `auto-fit` / `fit` / `fill` / `none` / 纯数字 `10`–`400` | 缩放；纯数字＝自定义百分比 |
@@ -282,11 +284,11 @@ KV 表。当前键：`retention_days`（`0` = 永久）、`session_hash_key` / `
 
 ### 照片定时队列（issue #121）
 
-- `scheduled_prints` 复用现有打印参数和触发策略，幂等新增 `files_json`（按顺序存原图及缩略图相对路径）、`next_file_index`、`submitted_count`、`loop`、`start_date`、`history_json`（最近 20 次执行）。
-- 创建沿用 multipart：旧 `file` 字段保持单文件语义；新 `files` 字段表示照片队列（1–100 张 JPG/PNG/GIF），每次只提交一张；两者不能混用。队列支持 daily/weekly/monthly，`start_date` 为服务器本地日期，`loop=true` 循环，否则完成后停用。
-- 自动执行、手动执行、编辑、删除共享任务互斥；手动执行用 Background goroutine，页面通过列表的 `running` 字段轮询。成功提交才推进照片，失败/错过窗口不推进；手动队列执行消费下一次计划，保留暂停状态。
+- `scheduled_prints` 复用现有打印参数和触发策略，幂等新增 `files_json`（按顺序存原图及缩略图相对路径）、`next_file_index`、`submitted_count`、`loop`、`start_date`、`history_json`（最近 20 张照片的执行结果），以及 `photos_per_run`（每次张数，默认 1）。
+- 创建沿用 multipart：旧 `file` 字段保持单文件语义；新 `files` 字段表示照片队列（1–100 张 JPG/PNG/GIF），每次按 `photos_per_run` 提交 1–100 张（默认 1）；两者不能混用。队列支持 daily/weekly/monthly，`start_date` 为服务器本地日期，`loop=true` 循环，否则完成后停用。
+- 自动执行、手动执行、编辑、删除共享任务互斥；手动执行用 Background goroutine，页面通过列表的 `running` 字段轮询。每张成功提交后立即保存进度，中途失败停止当前批次，失败/错过窗口不推进该照片；手动队列执行消费下一次计划，保留暂停状态。
 - 修改打印参数或暂停时保留下次执行点；恢复时只重算已过期的执行点，避免撤销提前打印后的计划顺延。编辑页面保留未展示的打印参数，列表忽略较早请求的迟到响应。
-- 提交前将队列持久化为 `enabled=0, last_status=running`，成功或明确失败后原子写入结果、进度并恢复计划；服务中断或结果落库失败时保留暂停，防止自动重复提交不确定结果。
+- 提交前将队列持久化为 `enabled=0, last_status=running`，成功或明确失败后原子写入结果、进度并恢复计划；服务中断、结果落库失败或 IPP 提交结果不确定时保留暂停，防止自动重复提交不确定结果。
 - 原图和缩略图存于 `uploads/scheduled/`，沿用历史清理豁免；缩略图读取、删除用 `os.OpenInRoot` / `os.OpenRoot` 限制路径。原有单文件任务不受队列完成规则影响。
 
 ## 🔐 认证与安全
@@ -355,6 +357,13 @@ KV 表。当前键：`retention_days`（`0` = 永久）、`session_hash_key` / `
 - 🚫 gs 缩放**不要**用 `-dFIXEDMEDIA` + 固定 `-dDEVICEWIDTHPOINTS`：横向页会被塞进纵向纸并偏移。现在的 `Install` 过程逐页读 `currentpagedevice /PageSize`，纸张尺寸原样保留。
 - ⚠️ `-sOutputFile` 必须排在 `-f` **之前**——`-f` 之后的参数会被 gs 当成输入文件名，放末尾会直接报 `requires an output file`（Issue #98 的根因）。
 - 前端预览用等比 CSS transform 同步这个百分比（`PrintPreview.vue` / `PdfCanvas.vue`），其余缩放模式交给 CUPS，预览不模拟。
+
+### 驱动打印选项（issue #122）
+
+- `internal/ipp/printer_options.go` 通过现有安全连接读取队列 PPD，解析 PageSize / MediaType / 质量控件（可能叫 Ink 等）；缺失类别退回标准 IPP。无边距依赖 ImageableArea 或 media-col 四边距为零，不能用通用开关假定硬件支持。
+- `driver_options_json` 在 `print_jobs` 与 `scheduled_prints` 中保存完整选择；服务端只接受该队列上报的 attribute/value，客户端尺寸与标签不能作为信任来源。打印、重打、定时执行均复用校验和 IPP 编码。
+- 纸张转换与预览使用 `custom:<宽mm>x<高mm>`；无边距图片转换将应用默认 10mm 边距改为 0。已经生成的 PDF 不自动裁掉内容白边。
+- 多张队列仍逐张提交，在下一张开始前持久化成功进度；整个批次只推进一个调度点。磁盘上的任务在批次运行期间保持暂停，避免中断后重复打印不确定结果。详见 [docs/printer-options.md](docs/printer-options.md)。
 
 ## 🧹 维护任务
 

@@ -2,9 +2,11 @@ package ipp
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -16,6 +18,8 @@ import (
 
 // PrintJobOptions holds all optional parameters for a print job.
 type PrintJobOptions struct {
+	DriverOptions DriverOptions
+
 	IsDuplex     bool   // true = two-sided-long-edge, false = one-sided
 	IsColor      bool   // true = color, false = monochrome
 	Copies       int    // number of copies, 0 or 1 means 1
@@ -109,7 +113,7 @@ func SendPrintJob(printerURI string, r io.Reader, mime string, username string, 
 	}
 
 	// Paper size (media)
-	if opts.PaperSize != "" {
+	if opts.PaperSize != "" && opts.DriverOptions.PageSize == nil {
 		mediaName := paperSizeToIPP(opts.PaperSize)
 		if mediaName != "" {
 			req.Job.Add(goipp.MakeAttribute("media", goipp.TagKeyword, goipp.String(mediaName)))
@@ -117,12 +121,14 @@ func SendPrintJob(printerURI string, r io.Reader, mime string, username string, 
 	}
 
 	// Paper type (media-type)
-	if opts.PaperType != "" && opts.PaperType != "auto" {
+	if opts.PaperType != "" && opts.PaperType != "auto" && opts.DriverOptions.MediaType == nil {
 		mediaType := paperTypeToIPP(opts.PaperType)
 		if mediaType != "" {
 			req.Job.Add(goipp.MakeAttribute("media-type", goipp.TagKeyword, goipp.String(mediaType)))
 		}
 	}
+
+	addDriverOptions(req, opts.DriverOptions)
 
 	// Media source (input tray). Maps to the PPD "InputSlot" option via the CUPS
 	// filters. "auto" (or empty) lets the printer pick, so it is a no-op and not
@@ -209,22 +215,33 @@ func SendPrintJob(printerURI string, r io.Reader, mime string, username string, 
 	}
 	if err != nil {
 		log.Printf("[ipp] SendPrintJob: http error: %v", err)
-		return "", fmt.Errorf("http post: %w", err)
+		failure := fmt.Errorf("http post: %w", err)
+		var dialErr *net.OpError
+		if errors.As(err, &dialErr) && dialErr.Op == "dial" {
+			return "", failure // No connection was established, so no job was sent.
+		}
+		return "", &SubmissionUncertainError{Err: failure}
 	}
 	log.Printf("[ipp] SendPrintJob: HTTP response status: %s", resp.Status)
 	if resp.StatusCode/100 != 2 {
 		body, _ := io.ReadAll(limitedBody(resp.Body))
 		log.Printf("[ipp] SendPrintJob: non-2xx body: %s", string(body))
-		return "", fmt.Errorf("http status: %s", resp.Status)
+		failure := fmt.Errorf("http status: %s", resp.Status)
+		if resp.StatusCode >= 500 || resp.StatusCode == http.StatusRequestTimeout {
+			return "", &SubmissionUncertainError{Err: failure}
+		}
+		return "", failure
 	}
 
 	var rsp goipp.Message
 	if err := rsp.Decode(limitedBody(resp.Body)); err != nil {
 		log.Printf("[ipp] SendPrintJob: decode error: %v", err)
-		return "", fmt.Errorf("decode ipp response: %w", err)
+		return "", &SubmissionUncertainError{Err: fmt.Errorf("decode ipp response: %w", err)}
 	}
 	log.Printf("[ipp] SendPrintJob: IPP response code: %d (%s)", rsp.Code, goipp.Status(rsp.Code).String())
-	if goipp.Status(rsp.Code) != goipp.StatusOk {
+	// IPP's entire 0x00xx class is successful, including substituted/conflicting
+	// attributes (RFC 8011, B.1.2). The printer has already accepted those jobs.
+	if rsp.Code >= 0x0100 {
 		return "", fmt.Errorf("ipp error: %s", goipp.Status(rsp.Code).String())
 	}
 

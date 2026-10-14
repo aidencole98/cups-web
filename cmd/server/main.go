@@ -127,6 +127,7 @@ func main() {
 	protected.HandleFunc("/print-records/{id:[0-9]+}/file", printRecordFileHandler).Methods("GET")
 	protected.HandleFunc("/print-records/{id:[0-9]+}/reprint", reprintHandler).Methods("POST")
 	protected.HandleFunc("/printer-info", printerInfoHandler).Methods("GET")
+	protected.HandleFunc("/printer-options", printerOptionsHandler).Methods("GET")
 	// 定时打印（issue #28）：用户上传文件 + 打印参数 + 触发策略，由后台调度器到点触发。
 	protected.HandleFunc("/scheduled-prints", scheduledListHandler).Methods("GET")
 	protected.HandleFunc("/scheduled-prints", scheduledCreateHandler).Methods("POST")

@@ -88,6 +88,7 @@
               />
             </div>
             <PrintOptions
+              :printer-uri="reprintForm.printer" v-model:driverOptions="reprintForm.driverOptions"
               v-model:isColor="reprintForm.isColor"
               v-model:duplex="reprintForm.duplex"
               v-model:copies="reprintForm.copies"
@@ -147,6 +148,7 @@ function defaultReprintForm() {
     isColor: true,
     duplex: 'one-sided',
     copies: 1,
+    driverOptions: {},
     paperSize: 'A4',
     paperType: 'plain',
     mediaSource: 'auto',
@@ -198,6 +200,7 @@ function openReprintDialog(rec) {
     isColor: rec.isColor,
     duplex: rec.isDuplex ? 'two-sided-long-edge' : 'one-sided',
     copies: rec.copies ?? def.copies,
+    driverOptions: !props.currentPrinter || props.currentPrinter === rec.printerUri ? (rec.driverOptions || {}) : {},
     paperSize: rec.paperSize ?? def.paperSize,
     paperType: rec.paperType ?? def.paperType,
     mediaSource: rec.mediaSource ?? def.mediaSource,
@@ -235,6 +238,7 @@ function submitReprint() {
     copies: f.copies,
     orientation: f.orientation,
     paperSize: f.paperSize,
+    driverOptions: f.driverOptions,
     paperType: f.paperType,
     mediaSource: f.mediaSource,
     printScaling: f.printScaling === 'custom' ? clampScalePercent(f.scalePercent) : f.printScaling,

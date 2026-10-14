@@ -22,16 +22,17 @@ import (
 )
 
 type printRecordResponse struct {
-	ID         int64  `json:"id"`
-	UserID     int64  `json:"userId"`
-	Username   string `json:"username"`
-	PrinterURI string `json:"printerUri"`
-	Filename   string `json:"filename"`
-	Pages      int    `json:"pages"`
-	JobID      string `json:"jobId"`
-	Status     string `json:"status"`
-	IsDuplex   bool   `json:"isDuplex"`
-	IsColor    bool   `json:"isColor"`
+	DriverOptions ipp.DriverOptions `json:"driverOptions"`
+	ID            int64             `json:"id"`
+	UserID        int64             `json:"userId"`
+	Username      string            `json:"username"`
+	PrinterURI    string            `json:"printerUri"`
+	Filename      string            `json:"filename"`
+	Pages         int               `json:"pages"`
+	JobID         string            `json:"jobId"`
+	Status        string            `json:"status"`
+	IsDuplex      bool              `json:"isDuplex"`
+	IsColor       bool              `json:"isColor"`
 
 	// 完整打印参数快照，供前端「重新打印」预填第一次的设置（Issue #68）。
 	Copies         int    `json:"copies"`
@@ -216,6 +217,7 @@ func mapPrintRecords(records []store.PrintRecord) []printRecordResponse {
 
 			Copies:         rec.Copies,
 			Orientation:    rec.Orientation,
+			DriverOptions:  rec.DriverOptions,
 			PaperSize:      rec.PaperSize,
 			PaperType:      rec.PaperType,
 			MediaSource:    rec.MediaSource,
@@ -235,19 +237,20 @@ func mapPrintRecords(records []store.PrintRecord) []printRecordResponse {
 }
 
 type reprintRequest struct {
-	Printer       string `json:"printer"`
-	Duplex        bool   `json:"duplex"`
-	Color         bool   `json:"color"`
-	Copies        int    `json:"copies"`
-	Orientation   string `json:"orientation"`
-	PaperSize     string `json:"paperSize"`
-	PaperType     string `json:"paperType"`
-	MediaSource   string `json:"mediaSource"`
-	PrintScaling  string `json:"printScaling"`
-	PageRange     string `json:"pageRange"`
-	PageSet       string `json:"pageSet"`
-	Mirror        bool   `json:"mirror"`
-	WatermarkText string `json:"watermarkText"`
+	DriverOptions ipp.DriverOptions `json:"driverOptions"`
+	Printer       string            `json:"printer"`
+	Duplex        bool              `json:"duplex"`
+	Color         bool              `json:"color"`
+	Copies        int               `json:"copies"`
+	Orientation   string            `json:"orientation"`
+	PaperSize     string            `json:"paperSize"`
+	PaperType     string            `json:"paperType"`
+	MediaSource   string            `json:"mediaSource"`
+	PrintScaling  string            `json:"printScaling"`
+	PageRange     string            `json:"pageRange"`
+	PageSet       string            `json:"pageSet"`
+	Mirror        bool              `json:"mirror"`
+	WatermarkText string            `json:"watermarkText"`
 
 	NumberUp       int    `json:"numberUp"`
 	NumberUpLayout string `json:"numberUpLayout"`
@@ -277,6 +280,13 @@ func reprintHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "missing printer field")
 		return
 	}
+	var optionErr error
+	req.DriverOptions, optionErr = ipp.ResolveDriverOptions(r.Context(), req.Printer, req.DriverOptions)
+	if optionErr != nil {
+		writeJSONError(w, http.StatusBadRequest, optionErr.Error())
+		return
+	}
+	req.PaperSize = req.DriverOptions.PaperSize(req.PaperSize)
 	if req.Copies < 1 {
 		req.Copies = 1
 	}
@@ -392,7 +402,7 @@ func reprintHandler(w http.ResponseWriter, r *http.Request) {
 		printCleanup = cleanup
 		printMime = "application/pdf"
 	case fileKindImage:
-		outPath, cleanup, err := convertImageToPDF(storedAbs, req.Orientation, req.PaperSize, false, false)
+		outPath, cleanup, err := convertImageToPDF(storedAbs, req.Orientation, req.PaperSize, false, false, req.DriverOptions.PageSize != nil && req.DriverOptions.PageSize.Borderless)
 		if err != nil {
 			_ = os.Remove(storedAbs)
 			writeJSONError(w, http.StatusBadRequest, "conversion failed")
@@ -501,6 +511,7 @@ func reprintHandler(w http.ResponseWriter, r *http.Request) {
 
 			Copies:         req.Copies,
 			Orientation:    req.Orientation,
+			DriverOptions:  req.DriverOptions,
 			PaperSize:      req.PaperSize,
 			PaperType:      req.PaperType,
 			MediaSource:    req.MediaSource,
@@ -548,17 +559,18 @@ func reprintHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	printOpts := ipp.PrintJobOptions{
-		IsDuplex:     req.Duplex,
-		IsColor:      req.Color,
-		Copies:       req.Copies,
-		Orientation:  req.Orientation,
-		PaperSize:    req.PaperSize,
-		PaperType:    req.PaperType,
-		MediaSource:  req.MediaSource,
-		PrintScaling: printScaling,
-		PageRange:    req.PageRange,
-		PageSet:      pageSet,
-		Mirror:       req.Mirror,
+		DriverOptions: req.DriverOptions,
+		IsDuplex:      req.Duplex,
+		IsColor:       req.Color,
+		Copies:        req.Copies,
+		Orientation:   req.Orientation,
+		PaperSize:     req.PaperSize,
+		PaperType:     req.PaperType,
+		MediaSource:   req.MediaSource,
+		PrintScaling:  printScaling,
+		PageRange:     req.PageRange,
+		PageSet:       pageSet,
+		Mirror:        req.Mirror,
 
 		NumberUp:       req.NumberUp,
 		NumberUpLayout: req.NumberUpLayout,

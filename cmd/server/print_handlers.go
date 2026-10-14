@@ -66,7 +66,12 @@ func printHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	orientation := r.FormValue("orientation")
-	paperSize := r.FormValue("paper_size")
+	driverOpts, err := driverOptionsFromForm(r, printer)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	paperSize := driverOpts.PaperSize(r.FormValue("paper_size"))
 	paperType := r.FormValue("paper_type")
 	printScaling := r.FormValue("print_scaling")
 	mediaSource := r.FormValue("media_source")
@@ -181,7 +186,7 @@ func printHandler(w http.ResponseWriter, r *http.Request) {
 		printCleanup = cleanup
 		printMime = "application/pdf"
 	case fileKindImage:
-		outPath, cleanup, err := convertImageToPDF(storedAbs, orientation, paperSize, invert, compress)
+		outPath, cleanup, err := convertImageToPDF(storedAbs, orientation, paperSize, invert, compress, driverOpts.PageSize != nil && driverOpts.PageSize.Borderless)
 		if err != nil {
 			_ = os.Remove(storedAbs)
 			writeJSONError(w, http.StatusBadRequest, "conversion failed")
@@ -310,6 +315,7 @@ func printHandler(w http.ResponseWriter, r *http.Request) {
 
 				Copies:         copies,
 				Orientation:    orientation,
+				DriverOptions:  driverOpts,
 				PaperSize:      paperSize,
 				PaperType:      paperType,
 				MediaSource:    mediaSource,
@@ -361,17 +367,18 @@ func printHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	printOpts := ipp.PrintJobOptions{
-		IsDuplex:     isDuplex,
-		IsColor:      isColor,
-		Copies:       copies,
-		Orientation:  orientation,
-		PaperSize:    paperSize,
-		PaperType:    paperType,
-		PrintScaling: printScaling,
-		MediaSource:  mediaSource,
-		PageRange:    pageRange,
-		PageSet:      pageSet,
-		Mirror:       mirror,
+		DriverOptions: driverOpts,
+		IsDuplex:      isDuplex,
+		IsColor:       isColor,
+		Copies:        copies,
+		Orientation:   orientation,
+		PaperSize:     paperSize,
+		PaperType:     paperType,
+		PrintScaling:  printScaling,
+		MediaSource:   mediaSource,
+		PageRange:     pageRange,
+		PageSet:       pageSet,
+		Mirror:        mirror,
 
 		NumberUp:       numberUp,
 		NumberUpLayout: numberUpLayout,

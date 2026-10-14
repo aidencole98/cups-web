@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"cups-web/internal/auth"
+	"cups-web/internal/ipp"
 	"cups-web/internal/store"
 
 	"github.com/gorilla/mux"
@@ -30,6 +31,8 @@ type scheduledFileResponse struct {
 }
 
 type scheduledPrintResponse struct {
+	PhotosPerRun   int                     `json:"photosPerRun"`
+	DriverOptions  ipp.DriverOptions       `json:"driverOptions"`
 	Files          []scheduledFileResponse `json:"files"`
 	NextFileIndex  int                     `json:"nextFileIndex"`
 	SubmittedCount int                     `json:"submittedCount"`
@@ -88,7 +91,8 @@ func mapScheduledPrint(rec store.ScheduledPrint) scheduledPrintResponse {
 		history = []store.ScheduledRun{}
 	}
 	return scheduledPrintResponse{
-		Files: files, NextFileIndex: rec.NextFileIndex, SubmittedCount: rec.SubmittedCount,
+		PhotosPerRun: rec.PhotosPerRun,
+		Files:        files, NextFileIndex: rec.NextFileIndex, SubmittedCount: rec.SubmittedCount,
 		Loop: rec.Loop, StartDate: rec.StartDate, Completed: scheduledQueueComplete(rec),
 		Running: scheduledTaskRunning(rec.ID), History: history,
 		ID:         rec.ID,
@@ -102,6 +106,7 @@ func mapScheduledPrint(rec store.ScheduledPrint) scheduledPrintResponse {
 		IsColor:        rec.IsColor,
 		Copies:         rec.Copies,
 		Orientation:    rec.Orientation,
+		DriverOptions:  rec.DriverOptions,
 		PaperSize:      rec.PaperSize,
 		PaperType:      rec.PaperType,
 		MediaSource:    rec.MediaSource,
@@ -295,7 +300,12 @@ func scheduledUpdateHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := accessibleScheduledTask(r, id); err != nil {
+	if payload.PhotosPerRun != nil && (*payload.PhotosPerRun < 1 || *payload.PhotosPerRun > 100) {
+		writeJSONError(w, http.StatusBadRequest, "每次打印张数应为 1–100")
+		return
+	}
+	current, err := accessibleScheduledTask(r, id)
+	if err != nil {
 		writeScheduledAccessError(w, err)
 		return
 	}
@@ -304,6 +314,31 @@ func scheduledUpdateHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer releaseScheduledTask(id)
+	// Refresh after acquiring the shared execution/edit lock before validating
+	// choices. Preserve offline edits, but validate retained choices on a new URI.
+	current, err = accessibleScheduledTask(r, id)
+	if err != nil {
+		writeScheduledAccessError(w, err)
+		return
+	}
+	if payload.DriverOptions == nil && payload.PrinterURI != current.PrinterURI {
+		retained := current.DriverOptions
+		payload.DriverOptions = &retained
+	}
+	if payload.DriverOptions != nil {
+		if payload.PrinterURI == current.PrinterURI && payload.DriverOptions.SameChoices(current.DriverOptions) {
+			// Pausing an offline printer must not require another capability probe.
+			canonical := current.DriverOptions
+			payload.DriverOptions = &canonical
+		} else {
+			canonical, err := ipp.ResolveDriverOptions(r.Context(), payload.PrinterURI, *payload.DriverOptions)
+			if err != nil {
+				writeJSONError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			payload.DriverOptions = &canonical
+		}
+	}
 
 	err = appStore.WithTx(r.Context(), false, func(tx *sql.Tx) error {
 		rec, err := store.GetScheduledPrintByID(r.Context(), tx, id)
@@ -508,11 +543,13 @@ func scheduledThumbnailHandler(w http.ResponseWriter, r *http.Request) {
 
 // scheduledUpdatePayload 是 PUT 允许覆盖的字段。文件与用户不变。
 type scheduledUpdatePayload struct {
-	Loop       *bool   `json:"loop"`
-	StartDate  *string `json:"startDate"`
-	Name       string  `json:"name"`
-	PrinterURI string  `json:"printerUri"`
-	Enabled    *bool   `json:"enabled"`
+	PhotosPerRun  *int               `json:"photosPerRun"`
+	DriverOptions *ipp.DriverOptions `json:"driverOptions"`
+	Loop          *bool              `json:"loop"`
+	StartDate     *string            `json:"startDate"`
+	Name          string             `json:"name"`
+	PrinterURI    string             `json:"printerUri"`
+	Enabled       *bool              `json:"enabled"`
 
 	IsDuplex       bool   `json:"isDuplex"`
 	IsColor        bool   `json:"isColor"`
@@ -553,7 +590,13 @@ func applyScheduledPayload(rec *store.ScheduledPrint, p scheduledUpdatePayload) 
 	rec.IsColor = p.IsColor
 	rec.Copies = p.Copies
 	rec.Orientation = p.Orientation
-	rec.PaperSize = p.PaperSize
+	if p.DriverOptions != nil {
+		rec.DriverOptions = *p.DriverOptions
+	}
+	if p.PhotosPerRun != nil {
+		rec.PhotosPerRun = *p.PhotosPerRun
+	}
+	rec.PaperSize = rec.DriverOptions.PaperSize(p.PaperSize)
 	rec.PaperType = p.PaperType
 	rec.MediaSource = p.MediaSource
 	rec.PrintScaling = p.PrintScaling
@@ -594,7 +637,20 @@ func buildScheduledRecordFromForm(r *http.Request, userID int64, filename, store
 		return getStr(key) == "true"
 	}
 
+	driverOpts, err := driverOptionsFromForm(r, getStr("printer"))
+	if err != nil {
+		return store.ScheduledPrint{}, err
+	}
+	photosPerRun := 1
+	if raw := getStr("photos_per_run"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > 100 {
+			return store.ScheduledPrint{}, fmt.Errorf("每次打印张数应为 1–100")
+		}
+		photosPerRun = n
+	}
 	rec := store.ScheduledPrint{
+		DriverOptions: driverOpts, PhotosPerRun: photosPerRun,
 		UserID: userID,
 		Loop:   getBool("loop"), StartDate: getStr("start_date"),
 		Name:       strings.TrimSpace(getStr("name")),
@@ -606,7 +662,7 @@ func buildScheduledRecordFromForm(r *http.Request, userID int64, filename, store
 		IsColor:        getBool("color"),
 		Copies:         getInt("copies", 1),
 		Orientation:    getStr("orientation"),
-		PaperSize:      getStr("paper_size"),
+		PaperSize:      driverOpts.PaperSize(getStr("paper_size")),
 		PaperType:      getStr("paper_type"),
 		MediaSource:    getStr("media_source"),
 		PrintScaling:   getStr("print_scaling"),

@@ -11,3 +11,4 @@
 | [docker-build.md](docker-build.md) | AIO / 仅 Web 构建目标与共享依赖、三架构基础镜像选型史、ca-certificates 勿删、HOME/LibreOffice profile、docker-compose 配置理由、CI/CD |
 | [reverse-proxy.md](reverse-proxy.md) | 反代下「登录提示密码错误」的三段成因、两类跨源 403 的分别修法、为什么默认信任 `X-Forwarded-Host`、cookie `Secure` 三态、Caddy/Traefik、子路径限制、限流与真实 IP |
 | [conventions.md](conventions.md) | 常见开发任务步骤模板（新增 API/DB/页面/文件类型/驱动）、调试测试、Go/Vue 代码风格、Git 提交约定 |
+| [printer-options.md](printer-options.md) | 驱动纸张、无边距、介质与质量选项，参数快照及照片队列批量执行（issue #122） |

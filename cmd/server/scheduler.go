@@ -97,6 +97,12 @@ func persistScheduledResult(s *store.Store, id int64, lastRunAt, lastStatus, las
 // 避免依赖 HTTP request 上下文。返回值 status ∈ {printed, failed}。
 func executeScheduled(s *store.Store, uploads string, task store.ScheduledPrint) (string, error) {
 	ctx := context.Background()
+	driverOpts, err := ipp.ResolveDriverOptions(ctx, task.PrinterURI, task.DriverOptions)
+	if err != nil {
+		return "failed", err
+	}
+	task.DriverOptions = driverOpts
+	task.PaperSize = driverOpts.PaperSize(task.PaperSize)
 
 	origPath, err := os.OpenInRoot(uploads, filepath.FromSlash(task.StoredPath))
 	if err != nil {
@@ -150,7 +156,7 @@ func executeScheduled(s *store.Store, uploads string, task store.ScheduledPrint)
 			return "failed", fmt.Errorf("解析页数失败：%w", err)
 		}
 	case fileKindImage:
-		outPath, cleanup, err := convertImageToPDF(absPath, task.Orientation, task.PaperSize, false, false)
+		outPath, cleanup, err := convertImageToPDF(absPath, task.Orientation, task.PaperSize, false, false, task.DriverOptions.PageSize != nil && task.DriverOptions.PageSize.Borderless)
 		if err != nil {
 			return "failed", fmt.Errorf("图片转换失败：%w", err)
 		}
@@ -237,6 +243,7 @@ func executeScheduled(s *store.Store, uploads string, task store.ScheduledPrint)
 
 			Copies:         task.Copies,
 			Orientation:    task.Orientation,
+			DriverOptions:  task.DriverOptions,
 			PaperSize:      task.PaperSize,
 			PaperType:      task.PaperType,
 			MediaSource:    task.MediaSource,
@@ -279,17 +286,18 @@ func executeScheduled(s *store.Store, uploads string, task store.ScheduledPrint)
 	}
 
 	printOpts := ipp.PrintJobOptions{
-		IsDuplex:     isDuplex,
-		IsColor:      task.IsColor,
-		Copies:       task.Copies,
-		Orientation:  task.Orientation,
-		PaperSize:    task.PaperSize,
-		PaperType:    task.PaperType,
-		MediaSource:  task.MediaSource,
-		PrintScaling: effectiveScaling,
-		PageRange:    task.PageRange,
-		PageSet:      pageSet,
-		Mirror:       task.Mirror,
+		DriverOptions: task.DriverOptions,
+		IsDuplex:      isDuplex,
+		IsColor:       task.IsColor,
+		Copies:        task.Copies,
+		Orientation:   task.Orientation,
+		PaperSize:     task.PaperSize,
+		PaperType:     task.PaperType,
+		MediaSource:   task.MediaSource,
+		PrintScaling:  effectiveScaling,
+		PageRange:     task.PageRange,
+		PageSet:       pageSet,
+		Mirror:        task.Mirror,
 
 		NumberUp:       task.NumberUp,
 		NumberUpLayout: task.NumberUpLayout,
@@ -298,6 +306,10 @@ func executeScheduled(s *store.Store, uploads string, task store.ScheduledPrint)
 
 	job, err := ipp.SendPrintJob(task.PrinterURI, f, mimeType, task.Username, task.Filename, printOpts)
 	if err != nil {
+		if ipp.IsSubmissionUncertain(err) {
+			// Keep the history record queued; the printer may have accepted it.
+			return "running", fmt.Errorf("IPP 提交结果未确认：%w", err)
+		}
 		_ = s.WithTx(ctx, false, func(tx *sql.Tx) error {
 			return store.UpdatePrintStatus(ctx, tx, recordID, "failed", "")
 		})
@@ -426,6 +438,12 @@ func parseScheduleTime(s string) (int, int, bool) {
 // ensureScheduleDefaults 修剪 store.ScheduledPrint 字段，保证枚举合法。
 // 保持业务逻辑集中在一处，handler 与 scheduler 都可以调用。
 func ensureScheduleDefaults(rec *store.ScheduledPrint) error {
+	if rec.PhotosPerRun == 0 {
+		rec.PhotosPerRun = 1
+	}
+	if rec.PhotosPerRun < 1 || rec.PhotosPerRun > 100 {
+		return fmt.Errorf("每次打印张数应为 1–100")
+	}
 	if rec.StartDate != "" {
 		if _, err := time.Parse("2006-01-02", rec.StartDate); err != nil {
 			return errors.New("start_date 必须是 YYYY-MM-DD")

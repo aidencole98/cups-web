@@ -19,6 +19,8 @@ import (
 
 	"github.com/phpdave11/gofpdf"
 	"golang.org/x/image/draw"
+
+	"cups-web/internal/ipp"
 )
 
 const pdfPageMarginMM = 10.0
@@ -231,6 +233,9 @@ func rotateRGBA(src *image.RGBA, quarters int) *image.RGBA {
 // paperSizeToGofpdf 将纸张大小名称映射到 gofpdf 参数
 // 返回：gofpdf 认识的标准名称（或空字符串表示自定义）、自定义尺寸（如果是自定义纸张）
 func paperSizeToGofpdf(size string) (string, gofpdf.SizeType) {
+	if w, h, ok := ipp.ParsePaperDimensions(size); ok {
+		return "", gofpdf.SizeType{Wd: w, Ht: h}
+	}
 	switch size {
 	case "A5":
 		return "A5", gofpdf.SizeType{}
@@ -276,7 +281,7 @@ func getOrientationCode(orientation string) string {
 	return "P"
 }
 
-func convertImageToPDF(inputPath string, orientation string, paperSize string, invert bool, compress bool) (string, func(), error) {
+func convertImageToPDF(inputPath string, orientation string, paperSize string, invert bool, compress bool, borderless ...bool) (string, func(), error) {
 	tmpDir, err := os.MkdirTemp("", "convert-img-")
 	if err != nil {
 		return "", nil, err
@@ -306,6 +311,10 @@ func convertImageToPDF(inputPath string, orientation string, paperSize string, i
 	}
 
 	// 处理方向和纸张大小
+	marginMM := pdfPageMarginMM
+	if len(borderless) > 0 && borderless[0] {
+		marginMM = 0
+	}
 	orientCode := getOrientationCode(orientation)
 	paperName, customSize := paperSizeToGofpdf(paperSize)
 
@@ -322,13 +331,13 @@ func convertImageToPDF(inputPath string, orientation string, paperSize string, i
 		})
 	}
 
-	pdf.SetMargins(pdfPageMarginMM, pdfPageMarginMM, pdfPageMarginMM)
-	pdf.SetAutoPageBreak(false, pdfPageMarginMM)
+	pdf.SetMargins(marginMM, marginMM, marginMM)
+	pdf.SetAutoPageBreak(false, marginMM)
 	pdf.AddPage()
 
 	pageW, pageH := pdf.GetPageSize()
-	maxW := pageW - 2*pdfPageMarginMM
-	maxH := pageH - 2*pdfPageMarginMM
+	maxW := pageW - 2*marginMM
+	maxH := pageH - 2*marginMM
 	scale := math.Min(maxW/float64(cfg.Width), maxH/float64(cfg.Height))
 	if scale <= 0 {
 		scale = 1
@@ -432,7 +441,7 @@ func convertTextToPDF(inputPath string, orientation string, paperSize string) (s
 //
 // 非法或 <=1 的 perPage 一律按 1 处理。
 // 调用方负责在使用完输出 PDF 后调用返回的 cleanup 清理临时目录。
-func convertImagesMultiToPDF(fileHeaders []*multipart.FileHeader, orientation string, paperSize string, rotations []int, invert bool, perPage int, compress bool) (string, func(), error) {
+func convertImagesMultiToPDF(fileHeaders []*multipart.FileHeader, orientation string, paperSize string, rotations []int, invert bool, perPage int, compress bool, borderless ...bool) (string, func(), error) {
 	if len(fileHeaders) == 0 {
 		return "", nil, errors.New("no image files provided")
 	}
@@ -502,6 +511,10 @@ func convertImagesMultiToPDF(fileHeaders []*multipart.FileHeader, orientation st
 	}
 
 	// 构造 PDF
+	marginMM := pdfPageMarginMM
+	if len(borderless) > 0 && borderless[0] {
+		marginMM = 0
+	}
 	orientCode := getOrientationCode(orientation)
 	paperName, customSize := paperSizeToGofpdf(paperSize)
 
@@ -515,8 +528,8 @@ func convertImagesMultiToPDF(fileHeaders []*multipart.FileHeader, orientation st
 			OrientationStr: orientCode,
 		})
 	}
-	pdf.SetMargins(pdfPageMarginMM, pdfPageMarginMM, pdfPageMarginMM)
-	pdf.SetAutoPageBreak(false, pdfPageMarginMM)
+	pdf.SetMargins(marginMM, marginMM, marginMM)
+	pdf.SetAutoPageBreak(false, marginMM)
 
 	cols, rows := gridDimsForPerPage(perPage)
 	slotsPerPage := cols * rows
@@ -546,11 +559,11 @@ func convertImagesMultiToPDF(fileHeaders []*multipart.FileHeader, orientation st
 			pdf.AddPage()
 		}
 		pageW, pageH := pdf.GetPageSize()
-		maxW := pageW - 2*pdfPageMarginMM
-		maxH := pageH - 2*pdfPageMarginMM
+		maxW := pageW - 2*marginMM
+		maxH := pageH - 2*marginMM
 
 		if slotsPerPage == 1 {
-			drawImage(img, pdfPageMarginMM, pdfPageMarginMM, maxW, maxH)
+			drawImage(img, marginMM, marginMM, maxW, maxH)
 			continue
 		}
 		// 按行优先(row-major)分配:slot=0 在左上,横向填满一行再换行。
@@ -558,8 +571,8 @@ func convertImagesMultiToPDF(fileHeaders []*multipart.FileHeader, orientation st
 		row := slot / cols
 		slotW := (maxW - float64(cols-1)*gapMM) / float64(cols)
 		slotH := (maxH - float64(rows-1)*gapMM) / float64(rows)
-		slotX := pdfPageMarginMM + float64(col)*(slotW+gapMM)
-		slotY := pdfPageMarginMM + float64(row)*(slotH+gapMM)
+		slotX := marginMM + float64(col)*(slotW+gapMM)
+		slotY := marginMM + float64(row)*(slotH+gapMM)
 		drawImage(img, slotX, slotY, slotW, slotH)
 	}
 

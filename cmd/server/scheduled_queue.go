@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"cups-web/internal/ipp"
 	"cups-web/internal/store"
 	"golang.org/x/image/draw"
 )
@@ -137,13 +138,12 @@ func executeScheduledOccurrence(s *store.Store, uploads string, task store.Sched
 		task.NextRunAt = next
 		task.Enabled = enabled && (!manual || task.Enabled)
 	}
-	// 队列在提交前持久化为暂停 + 结果待确认。进程中断或结果落库失败时，
-	// 不自动重发可能已经出纸的照片，用户核实后才能恢复。
-	claimStatus, claimError, claimEnabled := task.LastStatus, task.LastError, task.Enabled
 	if len(task.Files) > 0 && !missed {
-		claimStatus, claimError, claimEnabled = "running", "上次提交结果未确认，请核实打印机后再恢复任务", false
+		return executeScheduledBatch(s, uploads, task, now, executor)
 	}
-	if err := persistScheduledResult(s, task.ID, task.LastRunAt, claimStatus, claimError, task.NextRunAt, claimEnabled); err != nil {
+	// Queue submissions use executeScheduledBatch's durable per-photo claim.
+	// Only single-file jobs and skipped occurrences reach this branch.
+	if err := persistScheduledResult(s, task.ID, task.LastRunAt, task.LastStatus, task.LastError, task.NextRunAt, task.Enabled); err != nil {
 		return err
 	}
 	status, errMsg := "skipped", "错过执行窗口，已跳过"
@@ -164,6 +164,60 @@ func executeScheduledOccurrence(s *store.Store, uploads string, task store.Sched
 		return fmt.Errorf("保存定时执行结果失败：%w", err)
 	}
 	return execErr
+}
+
+// Persist each accepted photo before submitting the next. Every in-flight batch
+// stays disabled on disk until a definite result is saved for the whole occurrence.
+func executeScheduledBatch(s *store.Store, uploads string, task store.ScheduledPrint, now time.Time,
+	executor func(*store.Store, string, store.ScheduledPrint) (string, error)) error {
+	count := task.PhotosPerRun
+	if count == 0 {
+		count = 1
+	}
+	if count < 1 || count > 100 {
+		return errors.New("每次打印张数应为 1–100")
+	}
+	resumeEnabled := task.Enabled
+	for i := 0; i < count && !scheduledQueueComplete(task); i++ {
+		file, err := selectedScheduledFile(task)
+		if err != nil {
+			return err
+		}
+		if err := persistScheduledResult(s, task.ID, task.LastRunAt, "running",
+			"上次提交结果未确认，请核实打印机后再恢复任务", task.NextRunAt, false); err != nil {
+			return err
+		}
+		selected := task
+		selected.Filename, selected.StoredPath = file.Filename, file.StoredPath
+		status, execErr := executor(s, uploads, selected)
+		errMsg := ""
+		uncertain := ipp.IsSubmissionUncertain(execErr)
+		if uncertain {
+			status, errMsg = "running", "提交结果未确认，请核实打印机后再恢复任务："+execErr.Error()
+		} else if execErr != nil {
+			status, errMsg = "failed", execErr.Error()
+		} else if status != "printed" {
+			execErr = fmt.Errorf("照片未成功提交：%s", status)
+			status, errMsg = "failed", execErr.Error()
+		}
+		recordScheduledExecution(&task, now, file.Filename, status, errMsg)
+		finished := execErr != nil || i+1 == count || scheduledQueueComplete(task)
+		snapshot := task
+		snapshot.Enabled = finished && !uncertain && resumeEnabled && !scheduledQueueComplete(task)
+		if !finished {
+			snapshot.LastStatus = "running"
+			snapshot.LastError = "批次未完成，请核实打印机后再恢复任务"
+		}
+		if err := s.WithTx(context.Background(), false, func(tx *sql.Tx) error {
+			return store.SaveScheduledExecution(context.Background(), tx, &snapshot)
+		}); err != nil {
+			return fmt.Errorf("保存定时执行结果失败：%w", err)
+		}
+		if execErr != nil {
+			return execErr
+		}
+	}
+	return nil
 }
 
 // 真正解码并生成小缩略图，避免列表每次下载整张原图。

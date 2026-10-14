@@ -3,11 +3,16 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
+
+	"cups-web/internal/ipp"
 )
 
 type PrintRecord struct {
+	DriverOptions ipp.DriverOptions
+
 	ID         int64
 	UserID     int64
 	Username   string
@@ -44,19 +49,23 @@ const printRecordColumns = `p.id, p.user_id, u.username, p.printer_uri, p.filena
 	p.job_id, p.status, p.is_duplex, p.is_color,
 	p.copies, p.orientation, p.paper_size, p.paper_type, p.media_source, p.print_scaling,
 	p.page_range, p.page_set, p.mirror, p.watermark_text, p.number_up, p.number_up_layout, p.page_border,
-	p.created_at`
+	p.created_at, p.driver_options_json`
 
 // scanPrintRecord 与 printRecordColumns 的列顺序严格对应。
 // 复用 users.go 中定义的 scanner 接口（*sql.Row / *sql.Rows 通用）。
 func scanPrintRecord(s scanner) (PrintRecord, error) {
 	var rec PrintRecord
+	var driverJSON string
 	err := s.Scan(
 		&rec.ID, &rec.UserID, &rec.Username, &rec.PrinterURI, &rec.Filename, &rec.StoredPath,
 		&rec.Pages, &rec.JobID, &rec.Status, &rec.IsDuplex, &rec.IsColor,
 		&rec.Copies, &rec.Orientation, &rec.PaperSize, &rec.PaperType, &rec.MediaSource, &rec.PrintScaling,
 		&rec.PageRange, &rec.PageSet, &rec.Mirror, &rec.WatermarkText, &rec.NumberUp, &rec.NumberUpLayout, &rec.PageBorder,
-		&rec.CreatedAt,
+		&rec.CreatedAt, &driverJSON,
 	)
+	if err == nil {
+		err = json.Unmarshal([]byte(driverJSON), &rec.DriverOptions)
+	}
 	return rec, err
 }
 
@@ -68,18 +77,22 @@ type PrintFilter struct {
 }
 
 func InsertPrintRecord(ctx context.Context, tx *sql.Tx, rec *PrintRecord) (int64, error) {
+	driverJSON, err := json.Marshal(rec.DriverOptions)
+	if err != nil {
+		return 0, err
+	}
 	res, err := tx.ExecContext(ctx, `INSERT INTO print_jobs (
 		user_id, printer_uri, filename, stored_path, pages,
 		job_id, status, is_duplex, is_color,
 		copies, orientation, paper_size, paper_type, media_source, print_scaling,
 		page_range, page_set, mirror, watermark_text, number_up, number_up_layout, page_border,
-		created_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		created_at, driver_options_json
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		rec.UserID, rec.PrinterURI, rec.Filename, rec.StoredPath, rec.Pages,
 		rec.JobID, rec.Status, rec.IsDuplex, rec.IsColor,
 		rec.Copies, rec.Orientation, rec.PaperSize, rec.PaperType, rec.MediaSource, rec.PrintScaling,
 		rec.PageRange, rec.PageSet, rec.Mirror, rec.WatermarkText, rec.NumberUp, rec.NumberUpLayout, rec.PageBorder,
-		rec.CreatedAt,
+		rec.CreatedAt, string(driverJSON),
 	)
 	if err != nil {
 		return 0, err

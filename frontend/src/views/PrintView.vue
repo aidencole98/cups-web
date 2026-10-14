@@ -246,6 +246,7 @@
 
         <!-- 打印参数 -->
         <PrintOptions
+          :printer-uri="printer" v-model:driverOptions="driverOptions"
           v-model:isColor="isColor"
           v-model:invert="invert"
           :invert-visible="isInvertible"
@@ -400,6 +401,7 @@ import { downscaleImageIfNeeded } from '../utils/image'
 import FileUpload from '../components/print/FileUpload.vue'
 import IdCardUpload from '../components/print/IdCardUpload.vue'
 import PrintPreview from '../components/print/PrintPreview.vue'
+import { paperDimensions } from '../utils/printer-options'
 import PrintOptions from '../components/print/PrintOptions.vue'
 import PrintRecordList from '../components/print/PrintRecordList.vue'
 import PrinterStatus from '../components/print/PrinterStatus.vue'
@@ -446,6 +448,7 @@ let imageConversionVersion = 0
 const duplex = ref('one-sided')
 const orientation = ref('portrait')
 const copies = ref(1)
+const driverOptions = ref({})
 const paperSize = ref('A4')
 const paperType = ref('plain')
 const mediaSource = ref('auto')
@@ -568,22 +571,6 @@ const printerInfo = ref(null)
 const loadingPrinterInfo = ref(false)
 const printerInfoError = ref('')
 
-// ─── 纸张尺寸映射 ─────────────────────────────────────────
-const paperDimensionsMap = {
-  'A5': { width: 148, height: 210 },
-  'A4': { width: 210, height: 297 },
-  'A3': { width: 297, height: 420 },
-  'A2': { width: 420, height: 594 },
-  'A1': { width: 594, height: 841 },
-  '5inch': { width: 89, height: 127 },
-  '6inch': { width: 102, height: 152 },
-  '7inch': { width: 127, height: 178 },
-  '8inch': { width: 152, height: 203 },
-  '10inch': { width: 203, height: 254 },
-  'Letter': { width: 216, height: 279 },
-  'Legal': { width: 216, height: 356 },
-}
-
 // ─── 选项列表（供 PrintOptions 内部的 paperSizeLabel 等计算使用） ──
 const orientationItems = [
   { label: '纵向', value: 'portrait' },
@@ -612,6 +599,7 @@ const isImageKind = computed(() =>
   isMultiImage.value ||
   (selectedFile.value && selectedFile.value.type && selectedFile.value.type.startsWith('image/'))
 )
+const isTextKind = computed(() => selectedFile.value && (selectedFile.value.type.startsWith('text/') || /\.(txt|md|html)$/i.test(selectedFile.value.name)))
 // 黑白反转仅对图片转 PDF 且黑白模式有效
 const isInvertible = computed(() => isImageKind.value && !isColor.value)
 // 切换到非「图片+黑白」场景时重置反转，避免彩色时残留反色
@@ -629,6 +617,19 @@ watch(compressImages, () => {
   if (!previewFile) return
   clearPreviewUrl()
   previewUrl.value = URL.createObjectURL(previewFile)
+  previewType.value = 'image'
+}, { flush: 'sync' })
+watch([paperSize, orientation, () => driverOptions.value.pageSize?.borderless], () => {
+  if (printMode.value !== 'standard' || (!isImageKind.value && !isTextKind.value)) return
+  imageConversionVersion++
+  pdfBlob.value = null
+  converted.value = false
+  gsApplied.value = false
+  clearPreviewUrl()
+  if (isTextKind.value) { previewType.value = 'text'; return }
+  const file = isMultiImage.value ? selectedImages.value.find(f => !isHeicImage(f)) : selectedFile.value
+  if (!file || isHeicImage(file)) return
+  previewUrl.value = URL.createObjectURL(file)
   previewType.value = 'image'
 }, { flush: 'sync' })
 const canPrint = computed(() => {
@@ -668,7 +669,7 @@ const canConvert = computed(() => {
 
 const paperSizeLabel = computed(() => {
   const item = paperSizeItems.find(i => i.value === paperSize.value)
-  return item?.label || paperSize.value
+  return driverOptions.value.pageSize?.label || item?.label || paperSize.value
 })
 
 const orientationLabel = computed(() => {
@@ -677,7 +678,7 @@ const orientationLabel = computed(() => {
 })
 
 const paperDimText = computed(() => {
-  const dim = paperDimensionsMap[paperSize.value]
+  const dim = paperDimensions(paperSize.value)
   if (!dim) return ''
   if (orientation.value === 'landscape') {
     return `${dim.height}×${dim.width}mm`
@@ -699,7 +700,7 @@ const printScalingParam = computed(() => {
 })
 
 const paperPreviewStyle = computed(() => {
-  const dim = paperDimensionsMap[paperSize.value]
+  const dim = paperDimensions(paperSize.value)
   if (!dim) return {}
   const isLandscape = orientation.value === 'landscape'
   const width = isLandscape ? dim.height : dim.width
@@ -963,6 +964,7 @@ async function uploadAndPrintBatch() {
         fd.append('file', uploadFile, uploadFile.name)
         fd.append('orientation', orientation.value)
         fd.append('paper_size', paperSize.value)
+        fd.append('borderless', String(!!driverOptions.value.pageSize?.borderless))
         if (invert.value) fd.append('invert', 'true')
         if (compressImages.value) fd.append('compress_images', 'true')
         const convertResp = await apiFetch('/api/convert', { method: 'POST', body: fd }, () => emit('logout'))
@@ -982,6 +984,7 @@ async function uploadAndPrintBatch() {
       form.append('orientation', orientation.value)
       form.append('paper_size', paperSize.value)
       form.append('paper_type', paperType.value)
+      form.append('driver_options', JSON.stringify(driverOptions.value))
       if (mediaSource.value && mediaSource.value !== 'auto') form.append('media_source', mediaSource.value)
       form.append('print_scaling', printScalingParam.value)
       if (pageRange.value.trim()) form.append('page_range', pageRange.value.trim())
@@ -1027,6 +1030,7 @@ async function uploadAndPrintBatch() {
 async function convertImagesToPdfViaServer(files, orient, pSize, name, rotations, invert) {
   const list = Array.isArray(files) ? files : [files]
   const compress = compressImages.value
+  const borderless = !!driverOptions.value.pageSize?.borderless
   const downscaled = []
   for (const f of list) {
     downscaled.push(await downscaleImageIfNeeded(f, compress))
@@ -1049,6 +1053,7 @@ async function convertImagesToPdfViaServer(files, orient, pSize, name, rotations
 
   if (orient) fd.append('orientation', orient)
   if (pSize) fd.append('paper_size', pSize)
+  fd.append('borderless', String(borderless))
   if (invert) fd.append('invert', 'true')
   if (compress) fd.append('compress_images', 'true')
   const resp = await apiFetch('/api/convert', { method: 'POST', body: fd }, () => emit('logout'))
@@ -1173,6 +1178,7 @@ async function uploadAndPrint() {
   form.append('orientation', orientation.value)
   form.append('paper_size', paperSize.value)
   form.append('paper_type', paperType.value)
+  form.append('driver_options', JSON.stringify(driverOptions.value))
   if (mediaSource.value && mediaSource.value !== 'auto') form.append('media_source', mediaSource.value)
   form.append('print_scaling', printScalingParam.value)
   if (pageRange.value.trim()) form.append('page_range', pageRange.value.trim())
@@ -1219,11 +1225,8 @@ async function loadPrintRecords(silent = false) {
     const resp = await apiFetch('/api/print-records', {}, () => emit('logout'))
     if (resp.ok) {
       const data = await resp.json()
-      printRecords.value = (data || []).map(r => ({
-        id: r.id, filename: r.filename, printerUri: r.printerUri,
-        pages: r.pages, status: r.status, isColor: r.isColor,
-        isDuplex: r.isDuplex, jobId: r.jobId, createdAt: r.createdAt
-      }))
+      // 重打弹窗需要完整参数快照，包括驱动选项和实际纸张尺寸。
+      printRecords.value = data || []
     }
   } catch (e) {
     console.error('加载打印记录失败', e)
@@ -1245,6 +1248,7 @@ async function handleReprint(payload) {
         copies: payload.copies,
         orientation: payload.orientation,
         paperSize: payload.paperSize,
+        driverOptions: payload.driverOptions,
         paperType: payload.paperType,
         mediaSource: payload.mediaSource,
         printScaling: payload.printScaling,
@@ -1373,6 +1377,7 @@ function switchMode(mode) {
     printScaling.value = 'none'
     scalePercent.value = 100
     paperSize.value = 'A4'
+    driverOptions.value = { ...driverOptions.value, pageSize: undefined }
   } else {
     isColor.value = true
     printScaling.value = 'auto'
@@ -1383,6 +1388,7 @@ function switchMode(mode) {
 function setIdCardPaper(p) {
   idCardPaper.value = p
   paperSize.value = p
+  driverOptions.value = { ...driverOptions.value, pageSize: undefined }
 }
 
 function clearModeState() {

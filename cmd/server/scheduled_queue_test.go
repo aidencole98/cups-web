@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"cups-web/internal/auth"
+	"cups-web/internal/ipp"
 	"cups-web/internal/store"
 	"github.com/gorilla/mux"
 )
@@ -123,6 +124,97 @@ func TestScheduledQueueSequenceAndRestart(t *testing.T) {
 	restored := readScheduledTestTask(t, reopened, task.ID)
 	if restored.SubmittedCount != 2 || !scheduledQueueComplete(restored) || restored.Enabled || len(restored.Files) != 2 {
 		t.Fatalf("lost progress: %+v", restored)
+	}
+}
+
+func TestScheduledQueueBatchProgress(t *testing.T) {
+	for _, mode := range []string{"remaining", "loop", "partial-failure", "uncertain", "interrupted", "save-failed", "manual-paused"} {
+		t.Run(mode, func(t *testing.T) {
+			s, user := scheduledTestStore(t)
+			task := insertScheduledTestTask(t, s, user)
+			task.PhotosPerRun = 3
+			if mode == "loop" {
+				task.Loop = true
+				task.NextFileIndex = 1
+			}
+			if mode == "manual-paused" {
+				task.Enabled = false
+			}
+			if err := s.WithTx(context.Background(), false, func(tx *sql.Tx) error { return store.UpdateScheduledPrint(context.Background(), tx, &task) }); err != nil {
+				t.Fatal(err)
+			}
+			now, _ := time.Parse(time.RFC3339, task.NextRunAt)
+			calls := 0
+			var execErr error
+			func() {
+				defer func() {
+					if recovered := recover(); recovered != nil && mode != "interrupted" {
+						panic(recovered)
+					}
+				}()
+				execErr = executeScheduledOccurrence(s, "", task, now, mode == "manual-paused", func(_ *store.Store, _ string, selected store.ScheduledPrint) (string, error) {
+					calls++
+					claimed := readScheduledTestTask(t, s, task.ID)
+					if claimed.Enabled || claimed.LastStatus != "running" || claimed.SubmittedCount != calls-1 {
+						t.Fatalf("progress not durably claimed: %+v", claimed)
+					}
+					want := []string{"01.png", "02.png"}[(calls-1)%2]
+					if mode == "loop" {
+						want = []string{"02.png", "01.png"}[(calls-1)%2]
+					}
+					if selected.Filename != want {
+						t.Fatalf("selected=%s want=%s", selected.Filename, want)
+					}
+					if calls == 2 && mode == "partial-failure" {
+						return "failed", errors.New("offline")
+					}
+					if calls == 2 && mode == "uncertain" {
+						return "running", &ipp.SubmissionUncertainError{Err: errors.New("response lost after upload")}
+					}
+					if calls == 2 && mode == "interrupted" {
+						panic("process stopped")
+					}
+					if calls == 1 && mode == "save-failed" {
+						_, err := s.DB.Exec(`CREATE TRIGGER fail_progress BEFORE UPDATE OF submitted_count ON scheduled_prints WHEN NEW.submitted_count > OLD.submitted_count BEGIN SELECT RAISE(FAIL, 'disk error'); END`)
+						if err != nil {
+							t.Fatal(err)
+						}
+					}
+					return "printed", nil
+				})
+			}()
+			actual := readScheduledTestTask(t, s, task.ID)
+			switch mode {
+			case "remaining", "manual-paused":
+				if execErr != nil || calls != 2 || actual.SubmittedCount != 2 || actual.Enabled || !scheduledQueueComplete(actual) {
+					t.Fatalf("bad completion: %+v %v calls=%d", actual, execErr, calls)
+				}
+			case "loop":
+				if execErr != nil || calls != 3 || actual.SubmittedCount != 3 || actual.NextFileIndex != 0 || !actual.Enabled {
+					t.Fatalf("bad loop: %+v %v", actual, execErr)
+				}
+			case "partial-failure":
+				if execErr == nil || calls != 2 || actual.SubmittedCount != 1 || actual.NextFileIndex != 1 || !actual.Enabled || actual.LastStatus != "failed" {
+					t.Fatalf("lost accepted photo: %+v %v", actual, execErr)
+				}
+			case "interrupted":
+				if calls != 2 || actual.SubmittedCount != 1 || actual.NextFileIndex != 1 || actual.Enabled || actual.LastStatus != "running" {
+					t.Fatalf("unsafe interruption: %+v", actual)
+				}
+			case "uncertain":
+				if execErr == nil || calls != 2 || actual.SubmittedCount != 1 || actual.NextFileIndex != 1 || actual.Enabled || actual.LastStatus != "running" || actual.History[0].Status != "running" {
+					t.Fatalf("uncertain result could auto-replay: %+v %v", actual, execErr)
+				}
+			case "save-failed":
+				if execErr == nil || calls != 1 || actual.SubmittedCount != 0 || actual.Enabled || actual.LastStatus != "running" {
+					t.Fatalf("continued after persistence failure: %+v %v", actual, execErr)
+				}
+			}
+			next, _ := time.Parse(time.RFC3339, actual.NextRunAt)
+			if next.Sub(now) != 24*time.Hour {
+				t.Fatalf("batch consumed multiple schedule points: %s", actual.NextRunAt)
+			}
+		})
 	}
 }
 
@@ -326,7 +418,7 @@ func TestScheduledStartDateAndLegacyMigration(t *testing.T) {
 	}
 	s, user := scheduledTestStore(t)
 	task := insertScheduledTestTask(t, s, user)
-	for _, column := range []string{"files_json", "history_json", "next_file_index", "submitted_count", "loop", "start_date"} {
+	for _, column := range []string{"files_json", "history_json", "next_file_index", "submitted_count", "loop", "start_date", "driver_options_json", "photos_per_run"} {
 		if _, err := s.DB.Exec("ALTER TABLE scheduled_prints DROP COLUMN " + column); err != nil {
 			t.Fatal(err)
 		}
@@ -341,7 +433,7 @@ func TestScheduledStartDateAndLegacyMigration(t *testing.T) {
 	}
 	defer reopened.Close()
 	legacy := readScheduledTestTask(t, reopened, task.ID)
-	if len(legacy.Files) != 0 || scheduledQueueComplete(legacy) || !legacy.Enabled {
+	if len(legacy.Files) != 0 || scheduledQueueComplete(legacy) || !legacy.Enabled || legacy.PhotosPerRun != 1 || !legacy.DriverOptions.Empty() {
 		t.Fatalf("legacy changed: %+v", legacy)
 	}
 	now, _ := time.Parse(time.RFC3339, legacy.NextRunAt)

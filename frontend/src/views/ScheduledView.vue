@@ -70,7 +70,7 @@
             </div>
           </div>
           <div class="flex items-center gap-1 flex-shrink-0">
-            <UButton size="xs" variant="ghost" icon="i-lucide-play" :loading="rec.running || rec._running" :disabled="rec.completed || rec.running" @click="runNow(rec)">{{ rec.files?.length ? '打印下一张' : '立即' }}</UButton>
+            <UButton size="xs" variant="ghost" icon="i-lucide-play" :loading="rec.running || rec._running" :disabled="rec.completed || rec.running" @click="runNow(rec)">{{ rec.files?.length ? '打印下一批' : '立即' }}</UButton>
             <UButton size="xs" variant="ghost" :icon="rec.enabled ? 'i-lucide-pause' : 'i-lucide-play-circle'" :disabled="rec.completed || rec.running" @click="toggleEnabled(rec)">
               {{ rec.enabled ? '暂停' : '恢复' }}
             </UButton>
@@ -105,7 +105,7 @@
           </div>
           <div class="rounded-lg bg-elevated/50 px-3 py-2 text-xs text-muted space-y-1">
             <div v-if="!rec.completed">下一张：{{ rec.files[rec.nextFileIndex]?.filename }}</div>
-            <div>{{ rec.loop ? '全部提交后从第一张继续循环。' : '照片全部提交后，任务自动结束。' }} 每次提交 {{ rec.copies }} 份；进度表示 CUPS 已接受任务。</div>
+            <div>{{ rec.loop ? '全部提交后从第一张继续循环。' : '照片全部提交后，任务自动结束。' }} 每次打印 {{ rec.photosPerRun || 1 }} 张，每张 {{ rec.copies }} 份；进度表示 CUPS 已接受任务。</div>
           </div>
           <details v-if="rec.history?.length" class="text-sm">
             <summary class="cursor-pointer text-muted">最近执行（{{ rec.history.length }}）</summary>
@@ -166,7 +166,7 @@
                 <div class="text-xs truncate mt-1">{{ photo.filename }}</div>
               </div>
             </div>
-            <template #help>{{ editing ? '更换照片或顺序请新建任务；已提交的进度会保留。' : '支持 JPG / PNG / GIF，最多 100 张。拖动或使用箭头调整顺序，每次只打印一张照片。' }}</template>
+            <template #help>{{ editing ? '更换照片或顺序请新建任务；已提交的进度会保留。' : '支持 JPG / PNG / GIF，最多 100 张。拖动或使用箭头调整顺序，按设定张数依次打印。' }}</template>
           </UFormField>
           <UFormField v-else-if="!editing" label="文件" required>
             <input type="file"
@@ -228,13 +228,14 @@
 
 
           </div>
+          <PrinterMediaOptions :key="editing?.id || 'new'" :printer-uri="form.printerUri"
+            v-model:driverOptions="form.driverOptions" v-model:paperSize="form.paperSize" v-model:paperType="form.paperType"
+            :paper-size-items="paperSizeItems" :paper-type-items="paperTypeItems" />
+          <UFormField v-if="form.mode === 'queue'" label="每次打印张数">
+            <UInput class="w-full" v-model.number="form.photosPerRun" type="number" min="1" max="100" />
+            <template #help>按队列顺序打印；每张的份数单独设置。</template>
+          </UFormField>
           <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <UFormField label="纸张">
-              <USelect class="w-full" v-model="form.paperSize" :items="paperSizeItems" value-key="value" label-key="label" />
-            </UFormField>
-            <UFormField label="纸张类型">
-              <USelect class="w-full" v-model="form.paperType" :items="paperTypeItems" value-key="value" label-key="label" />
-            </UFormField>
             <UFormField label="缩放">
               <USelect class="w-full" v-model="form.printScaling" :items="scalingItems" value-key="value" label-key="label" />
             </UFormField>
@@ -254,10 +255,10 @@
 
           <UFormField v-if="form.mode === 'queue'" label="全部照片提交后">
             <USelect :model-value="form.loop ? 'loop' : 'stop'" @update:model-value="form.loop = $event === 'loop'" :items="endModeItems" value-key="value" label-key="label" class="w-full" />
-            <template #help>失败或错过时间不消耗照片，下一次仍提交当前照片。立即打印会提前执行下一次计划。</template>
+            <template #help>中途失败会停止本批次，已成功的照片保留进度；下一次从失败照片继续。立即打印会提前执行下一次计划。</template>
           </UFormField>
           <div v-if="form.mode === 'queue' && !editing" class="rounded-lg bg-primary/10 px-3 py-2 text-sm text-primary">
-            {{ scheduleLabel(form) }} 打印 1 张，每张 {{ form.copies }} 份；
+            {{ scheduleLabel(form) }} 打印 {{ form.photosPerRun }} 张，每张 {{ form.copies }} 份；
             {{ form.loop ? '按顺序循环打印' : form.photos.length + ' 张全部提交后结束' }}。
           </div>
           <UFormField label="水印文字（可选）">
@@ -279,6 +280,7 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import PrinterMediaOptions from '../components/print/PrinterMediaOptions.vue'
 import { apiFetch, readError } from '../utils/api'
 
 const emit = defineEmits(['logout'])
@@ -330,7 +332,7 @@ function emptyForm() {
   return {
     id: null,
     name: '',
-    mode: 'queue', photos: [], existingFiles: [], loop: false,
+    mode: 'queue', photos: [], existingFiles: [], loop: false, photosPerRun: 1, driverOptions: {},
     startDate: defaultRunAtLocal().slice(0, 10), paperType: 'photo', printScaling: 'fit',
     file: null,
     filename: '',
@@ -514,6 +516,7 @@ function openEdit(rec) {
     duplex: rec.isDuplex ? 'two-sided-long-edge' : 'one-sided',
     color: rec.isColor ? 'color' : 'monochrome',
     paperSize: rec.paperSize || 'A4',
+    driverOptions: rec.driverOptions || {}, photosPerRun: rec.photosPerRun || 1,
     orientation: rec.orientation || 'portrait',
     watermarkText: rec.watermarkText || ''
   }
@@ -592,6 +595,7 @@ async function submit() {
 async function createNew(v) {
   const fd = new FormData()
   if (v.mode === 'queue') {
+    if (!Number.isInteger(v.photosPerRun) || v.photosPerRun < 1 || v.photosPerRun > 100) throw new Error('每次打印张数应为 1–100')
     for (const photo of v.photos) fd.append('files', photo.file, photo.file.name)
     fd.append('loop', String(v.loop))
   } else {
@@ -606,6 +610,8 @@ async function createNew(v) {
   fd.append('orientation', v.orientation)
   fd.append('paper_size', v.paperSize)
   fd.append('paper_type', v.paperType)
+  fd.append('driver_options', JSON.stringify(v.driverOptions))
+  fd.append('photos_per_run', String(v.photosPerRun))
   fd.append('media_source', 'auto')
   fd.append('print_scaling', v.printScaling)
   fd.append('page_set', 'all')
@@ -627,6 +633,7 @@ async function createNew(v) {
 }
 
 async function saveEdit(v) {
+  if (v.mode === 'queue' && (!Number.isInteger(v.photosPerRun) || v.photosPerRun < 1 || v.photosPerRun > 100)) throw new Error('每次打印张数应为 1–100')
   const payload = buildPayloadFromRecord(editing.value, {
     name: v.name,
     loop: v.loop,
@@ -637,6 +644,7 @@ async function saveEdit(v) {
     copies: v.copies,
     orientation: v.orientation,
     paperSize: v.paperSize,
+    driverOptions: v.driverOptions, photosPerRun: v.photosPerRun,
     paperType: v.paperType,
     printScaling: v.printScaling,
     watermarkText: v.watermarkText,
@@ -706,6 +714,7 @@ function buildPayloadFromRecord(rec, overrides = {}) {
     copies: rec.copies || 1,
     orientation: rec.orientation || 'portrait',
     paperSize: rec.paperSize || 'A4',
+    driverOptions: rec.driverOptions || {}, photosPerRun: rec.photosPerRun || 1,
     paperType: rec.paperType || 'plain',
     mediaSource: rec.mediaSource || 'auto',
     printScaling: rec.printScaling || 'fit',

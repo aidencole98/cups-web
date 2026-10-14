@@ -216,6 +216,15 @@ func (s *Store) migrate(ctx context.Context) error {
 			return fmt.Errorf("migrate scheduled prints: %w", err)
 		}
 	}
+	// Issue #122: snapshot driver choices and preserve one-photo behavior for old queues.
+	for _, table := range []string{"print_jobs", "scheduled_prints"} {
+		if err := addColumnIfMissing(ctx, s.DB, table, "driver_options_json TEXT NOT NULL DEFAULT '{}'"); err != nil {
+			return err
+		}
+	}
+	if err := addColumnIfMissing(ctx, s.DB, "scheduled_prints", "photos_per_run INTEGER NOT NULL DEFAULT 1"); err != nil {
+		return err
+	}
 	if err := addColumnIfMissing(ctx, s.DB, "users", "protected INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}

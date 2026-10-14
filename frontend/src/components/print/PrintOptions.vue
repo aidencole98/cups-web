@@ -74,15 +74,10 @@
           :style="{ maxHeight: showAdvanced ? '1000px' : '0px', opacity: showAdvanced ? 1 : 0, visibility: showAdvanced ? 'visible' : 'hidden' }"
         >
           <div class="space-y-4 pt-3">
-            <!-- 纸张大小 + 纸张类型 -->
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <UFormField label="纸张大小">
-                <USelect :model-value="paperSize" :items="paperSizeItems" value-key="value" label-key="label" class="w-full" @update:model-value="$emit('update:paperSize', $event)" />
-              </UFormField>
-              <UFormField label="纸张类型">
-                <USelect :model-value="paperType" :items="paperTypeItems" value-key="value" label-key="label" class="w-full" @update:model-value="$emit('update:paperType', $event)" />
-              </UFormField>
-            </div>
+            <PrinterMediaOptions :printer-uri="printerUri" :driver-options="driverOptions"
+              :paper-size="paperSize" :paper-type="paperType" :paper-size-items="paperSizeItems" :paper-type-items="paperTypeItems"
+              @update:driver-options="$emit('update:driverOptions', $event)"
+              @update:paper-size="$emit('update:paperSize', $event)" @update:paper-type="$emit('update:paperType', $event)" />
 
             <!-- 进纸盒（仅当打印机上报可用纸盒时显示） -->
             <UFormField v-if="mediaSourceItems.length > 1" label="进纸盒" hint="选择从哪个纸盒进纸；「自动」由打印机决定">
@@ -182,9 +177,12 @@
 </template>
 
 <script setup>
+import PrinterMediaOptions from './PrinterMediaOptions.vue'
 import { ref, computed, watch } from 'vue'
 
 const props = defineProps({
+  printerUri: { type: String, default: '' },
+  driverOptions: { type: Object, default: () => ({}) },
   isColor: { type: Boolean, default: true },
   invert: { type: Boolean, default: false },
   invertVisible: { type: Boolean, default: false },
@@ -210,6 +208,7 @@ const props = defineProps({
 })
 
 const emit = defineEmits([
+  'update:driverOptions',
   'update:isColor', 'update:invert', 'update:compressImages',
   'update:duplex', 'update:copies',
   'update:paperSize', 'update:paperType', 'update:mediaSource', 'update:printScaling', 'update:scalePercent', 'update:pageRange',
@@ -266,10 +265,11 @@ const mediaSourceItems = computed(() => {
 })
 
 const advancedSummary = computed(() => {
-  const sizeLabel = paperSizeItems.find(i => i.value === props.paperSize)?.label?.split(' ')[0] || props.paperSize
-  const typeLabel = paperTypeItems.find(i => i.value === props.paperType)?.label || props.paperType
+  const sizeLabel = props.driverOptions.pageSize?.label || paperSizeItems.find(i => i.value === props.paperSize)?.label?.split(' ')[0] || props.paperSize
+  const typeLabel = props.driverOptions.mediaType?.label || paperTypeItems.find(i => i.value === props.paperType)?.label || props.paperType
   const scaleLabel = scalingItems.find(i => i.value === props.printScaling)?.label || props.printScaling
   const parts = [sizeLabel, typeLabel, scaleLabel]
+  if (props.driverOptions.quality) parts.push(props.driverOptions.quality.label)
   if (props.mediaSource && props.mediaSource !== 'auto') parts.push(mediaSourceLabel(props.mediaSource))
   if (props.pageRange) parts.push(`页码: ${props.pageRange}`)
   const pageSetLabel = pageSetItems.find(i => i.value === props.pageSet)?.label
