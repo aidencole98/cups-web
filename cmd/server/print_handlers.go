@@ -186,7 +186,9 @@ func printHandler(w http.ResponseWriter, r *http.Request) {
 		printCleanup = cleanup
 		printMime = "application/pdf"
 	case fileKindImage:
-		outPath, cleanup, err := convertImageToPDF(storedAbs, orientation, paperSize, invert, compress, driverOpts.PageSize != nil && driverOpts.PageSize.Borderless)
+		outPath, cleanup, err := convertImageToPDF(storedAbs, orientation, paperSize, invert, compress, imagePDFOptions{
+			Borderless: driverOpts.PageSize != nil && driverOpts.PageSize.Borderless, PrintScaling: printScaling,
+		})
 		if err != nil {
 			_ = os.Remove(storedAbs)
 			writeJSONError(w, http.StatusBadRequest, "conversion failed")

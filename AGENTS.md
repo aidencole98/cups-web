@@ -363,6 +363,7 @@ KV 表。当前键：`retention_days`（`0` = 永久）、`session_hash_key` / `
 - `internal/ipp/printer_options.go` 通过现有安全连接读取队列 PPD，解析 PageSize / MediaType / 质量控件（可能叫 Ink 等）；缺失类别退回标准 IPP。无边距依赖 ImageableArea 或 media-col 四边距为零，不能用通用开关假定硬件支持。
 - `driver_options_json` 在 `print_jobs` 与 `scheduled_prints` 中保存完整选择；服务端只接受该队列上报的 attribute/value，客户端尺寸与标签不能作为信任来源。打印、重打、定时执行均复用校验和 IPP 编码。
 - 纸张转换与预览使用 `custom:<宽mm>x<高mm>`；无边距图片转换将应用默认 10mm 边距改为 0。已经生成的 PDF 不自动裁掉内容白边。
+- 图片 `print_scaling=fill` 在生成 PDF 时等比放大并居中裁切，单图按内容区、多图按各格子裁切；`fit` 完整显示。普通打印、转换、原图重打、定时任务共用排版，前端切换填充时必须使旧 PDF 缓存失效。已有 PDF 不按照片重新裁切。
 - 多张队列仍逐张提交，在下一张开始前持久化成功进度；整个批次只推进一个调度点。磁盘上的任务在批次运行期间保持暂停，避免中断后重复打印不确定结果。详见 [docs/printer-options.md](docs/printer-options.md)。
 
 ## 🧹 维护任务

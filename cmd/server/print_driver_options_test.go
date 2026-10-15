@@ -239,7 +239,7 @@ func TestDriverOptionsStoredForPrintAndSchedule(t *testing.T) {
 func TestBorderlessImagePDFDimensionsAndPlacement(t *testing.T) {
 	input := writeCompressionTestImage(t, 200, 300)
 	for _, borderless := range []bool{false, true} {
-		path, cleanup, err := convertImageToPDF(input, "portrait", "custom:101.6x152.4", false, false, borderless)
+		path, cleanup, err := convertImageToPDF(input, "portrait", "custom:101.6x152.4", false, false, imagePDFOptions{Borderless: borderless})
 		if err != nil {
 			t.Fatal(err)
 		}

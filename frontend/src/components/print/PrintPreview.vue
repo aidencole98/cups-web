@@ -36,7 +36,11 @@
         :style="adjustedPreviewStyle"
         class="bg-white shadow-lg border border-default overflow-hidden transition-all duration-300 ease-in-out relative mx-auto"
       >
-        <img v-if="previewType === 'image'" :src="previewUrl" class="w-full h-full object-contain transition-transform duration-200" :style="contentScaleStyle" />
+        <div v-if="previewType === 'image'" class="absolute inset-0 transition-transform duration-200" :style="contentScaleStyle">
+          <div class="absolute overflow-hidden" :style="imageContentStyle">
+            <img :src="previewUrl" class="w-full h-full" :style="{ objectFit: printScaling === 'fill' ? 'cover' : 'contain' }" />
+          </div>
+        </div>
         <PdfCanvas v-else-if="previewType === 'pdf'" :src="previewUrl" :watermark-text="watermarkText" :content-scale="contentScale" @preview-failed="onPreviewFailed" />
         <div
           v-else-if="previewType === 'text'"
@@ -55,6 +59,9 @@
     </div>
     <p v-if="pdfPreviewFailed && previewType === 'pdf'" class="mt-2 text-center text-xs text-muted">
       PDF 预览加载失败，不影响打印，可直接点击"开始打印"。
+    </p>
+    <p v-if="isMultiImage && previewType === 'image'" class="mt-2 text-center text-xs text-muted">
+      当前显示首张原图，合并 PDF 后可查看完整排版。
     </p>
   </UCard>
 </template>
@@ -76,12 +83,14 @@ const props = defineProps({
   paperPreviewStyle: { type: Object, default: () => ({}) },
   watermarkText: { type: String, default: '' },
   printScaling: { type: String, default: 'auto' },
-  scalePercent: { type: Number, default: 100 }
+  scalePercent: { type: Number, default: 100 },
+  borderless: { type: Boolean, default: false }
 })
 
 // 自定义百分比缩放：后端用 gs 把内容按比例缩小并在页面内居中，这里用等比 CSS transform
 // 同步预览，用户拖百分比时立刻能看到效果（Issue #98）。
-// 其余缩放模式（fit / fill / none…）由 CUPS 在打印时处理，预览不做模拟。
+// 图片的 fit/fill 和 10mm/无边距内容区与后端生成 PDF 的排版保持一致；
+// PDF 直接显示生成结果，不再对页面做 cover 裁切。
 const contentScale = computed(() => {
   if (props.printScaling !== 'custom') return 1
   const p = Number(props.scalePercent)
@@ -93,6 +102,15 @@ const contentScale = computed(() => {
 const contentScaleStyle = computed(() =>
   contentScale.value === 1 ? {} : { transform: `scale(${contentScale.value})` }
 )
+
+const imageContentStyle = computed(() => {
+  const [width, height] = String(props.paperPreviewStyle.aspectRatio || '').split('/').map(Number)
+  if (props.borderless || !(width > 20 && height > 20)) return { inset: '0' }
+  return {
+    left: `${1000 / width}%`, right: `${1000 / width}%`,
+    top: `${1000 / height}%`, bottom: `${1000 / height}%`
+  }
+})
 
 defineEmits(['update:orientation'])
 

@@ -281,7 +281,37 @@ func getOrientationCode(orientation string) string {
 	return "P"
 }
 
-func convertImageToPDF(inputPath string, orientation string, paperSize string, invert bool, compress bool, borderless ...bool) (string, func(), error) {
+type imagePDFOptions struct {
+	Borderless   bool
+	PrintScaling string
+}
+
+// drawPDFImage shares the same photo layout for a whole page and a grid cell.
+// fill enlarges without stretching, then clips at the content area's edges.
+// Other scaling modes retain the existing fit layout before CUPS processing.
+func drawPDFImage(pdf *gofpdf.Fpdf, path string, cfg image.Config, x, y, width, height float64, scaling string) {
+	if width <= 0 || height <= 0 || cfg.Width <= 0 || cfg.Height <= 0 {
+		pdf.SetErrorf("invalid image content area")
+		return
+	}
+	scale := math.Min(width/float64(cfg.Width), height/float64(cfg.Height))
+	if scaling == "fill" {
+		scale = math.Max(width/float64(cfg.Width), height/float64(cfg.Height))
+		pdf.ClipRect(x, y, width, height, false)
+		defer pdf.ClipEnd()
+	}
+	w, h := float64(cfg.Width)*scale, float64(cfg.Height)*scale
+	// fill can place a wide photo left of the page. Without this flag gofpdf
+	// treats a negative x as the current cursor position, breaking centering.
+	opts := gofpdf.ImageOptions{ReadDpi: true, AllowNegativePosition: true}
+	pdf.ImageOptions(path, x+(width-w)/2, y+(height-h)/2, w, h, false, opts, 0, "")
+}
+
+func convertImageToPDF(inputPath string, orientation string, paperSize string, invert bool, compress bool, options ...imagePDFOptions) (string, func(), error) {
+	var layout imagePDFOptions
+	if len(options) > 0 {
+		layout = options[0]
+	}
 	tmpDir, err := os.MkdirTemp("", "convert-img-")
 	if err != nil {
 		return "", nil, err
@@ -312,7 +342,7 @@ func convertImageToPDF(inputPath string, orientation string, paperSize string, i
 
 	// 处理方向和纸张大小
 	marginMM := pdfPageMarginMM
-	if len(borderless) > 0 && borderless[0] {
+	if layout.Borderless {
 		marginMM = 0
 	}
 	orientCode := getOrientationCode(orientation)
@@ -338,17 +368,7 @@ func convertImageToPDF(inputPath string, orientation string, paperSize string, i
 	pageW, pageH := pdf.GetPageSize()
 	maxW := pageW - 2*marginMM
 	maxH := pageH - 2*marginMM
-	scale := math.Min(maxW/float64(cfg.Width), maxH/float64(cfg.Height))
-	if scale <= 0 {
-		scale = 1
-	}
-	w := float64(cfg.Width) * scale
-	h := float64(cfg.Height) * scale
-	x := (pageW - w) / 2
-	y := (pageH - h) / 2
-
-	opts := gofpdf.ImageOptions{ImageType: "", ReadDpi: true}
-	pdf.ImageOptions(imgPath, x, y, w, h, false, opts, 0, "")
+	drawPDFImage(pdf, imgPath, cfg, marginMM, marginMM, maxW, maxH, layout.PrintScaling)
 
 	outPath := filepath.Join(tmpDir, "image.pdf")
 	if err := pdf.OutputFileAndClose(outPath); err != nil {
@@ -441,7 +461,11 @@ func convertTextToPDF(inputPath string, orientation string, paperSize string) (s
 //
 // 非法或 <=1 的 perPage 一律按 1 处理。
 // 调用方负责在使用完输出 PDF 后调用返回的 cleanup 清理临时目录。
-func convertImagesMultiToPDF(fileHeaders []*multipart.FileHeader, orientation string, paperSize string, rotations []int, invert bool, perPage int, compress bool, borderless ...bool) (string, func(), error) {
+func convertImagesMultiToPDF(fileHeaders []*multipart.FileHeader, orientation string, paperSize string, rotations []int, invert bool, perPage int, compress bool, options ...imagePDFOptions) (string, func(), error) {
+	var layout imagePDFOptions
+	if len(options) > 0 {
+		layout = options[0]
+	}
 	if len(fileHeaders) == 0 {
 		return "", nil, errors.New("no image files provided")
 	}
@@ -512,7 +536,7 @@ func convertImagesMultiToPDF(fileHeaders []*multipart.FileHeader, orientation st
 
 	// 构造 PDF
 	marginMM := pdfPageMarginMM
-	if len(borderless) > 0 && borderless[0] {
+	if layout.Borderless {
 		marginMM = 0
 	}
 	orientCode := getOrientationCode(orientation)
@@ -538,19 +562,7 @@ func convertImagesMultiToPDF(fileHeaders []*multipart.FileHeader, orientation st
 	const gapMM = 4.0
 
 	drawImage := func(img savedImage, slotX, slotY, slotW, slotH float64) {
-		if slotW <= 0 || slotH <= 0 {
-			return
-		}
-		scale := math.Min(slotW/float64(img.cfg.Width), slotH/float64(img.cfg.Height))
-		if scale <= 0 {
-			scale = 1
-		}
-		w := float64(img.cfg.Width) * scale
-		h := float64(img.cfg.Height) * scale
-		x := slotX + (slotW-w)/2
-		y := slotY + (slotH-h)/2
-		opts := gofpdf.ImageOptions{ImageType: "", ReadDpi: true}
-		pdf.ImageOptions(img.path, x, y, w, h, false, opts, 0, "")
+		drawPDFImage(pdf, img.path, img.cfg, slotX, slotY, slotW, slotH, layout.PrintScaling)
 	}
 
 	for i, img := range saved {

@@ -139,7 +139,10 @@ async function renderPage(pageNum) {
     const viewport = page.getViewport({ scale: 1 })
     const scaleX = containerWidth / viewport.width
     const scaleY = containerHeight / viewport.height
-    const baseScale = Math.min(scaleX, scaleY, 2)
+    // Match the displayed paper even for small photo formats. Capping the
+    // scale at 2 leaves an artificial white frame around a borderless PDF.
+    // The container dimensions still bound the actual canvas pixel count.
+    const baseScale = Math.min(scaleX, scaleY)
 
     // 高清渲染：scale 乘以 DPR（放大预览时再乘 superSample），canvas 实际像素更大，CSS 尺寸保持正常
     const pixelRatio = dpr * superSample.value

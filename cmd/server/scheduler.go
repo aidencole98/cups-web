@@ -171,7 +171,9 @@ func executeScheduled(s *store.Store, uploads string, task store.ScheduledPrint)
 				imagePaperSize = fmt.Sprintf("custom:%.4fx%.4f", h, w)
 			}
 		}
-		outPath, cleanup, err := convertImageToPDF(absPath, task.Orientation, imagePaperSize, false, false, task.DriverOptions.PageSize != nil && task.DriverOptions.PageSize.Borderless)
+		outPath, cleanup, err := convertImageToPDF(absPath, task.Orientation, imagePaperSize, false, false, imagePDFOptions{
+			Borderless: task.DriverOptions.PageSize != nil && task.DriverOptions.PageSize.Borderless, PrintScaling: task.PrintScaling,
+		})
 		if err != nil {
 			return "failed", fmt.Errorf("图片转换失败：%w", err)
 		}

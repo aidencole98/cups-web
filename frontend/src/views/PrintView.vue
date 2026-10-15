@@ -303,6 +303,7 @@
             :watermark-text="watermarkText"
             :print-scaling="printScaling"
             :scale-percent="scalePercent"
+            :borderless="!!driverOptions.pageSize?.borderless"
           />
         </div>
         <PrintRecordList ref="recordListRef" :records="printRecords" :loading="loadingRecords" :printers="printers" :current-printer="printer" :media-source-supported="printerInfo?.mediaSourceSupported || []" @refresh="loadPrintRecords" @reprint="handleReprint" />
@@ -619,7 +620,8 @@ watch(compressImages, () => {
   previewUrl.value = URL.createObjectURL(previewFile)
   previewType.value = 'image'
 }, { flush: 'sync' })
-watch([paperSize, orientation, () => driverOptions.value.pageSize?.borderless], () => {
+// Only fill changes the photo layout; the other modes share the existing fit PDF.
+watch([paperSize, orientation, () => driverOptions.value.pageSize?.borderless, () => printScaling.value === 'fill'], () => {
   if (printMode.value !== 'standard' || (!isImageKind.value && !isTextKind.value)) return
   imageConversionVersion++
   pdfBlob.value = null
@@ -954,6 +956,9 @@ async function uploadAndPrintBatch() {
   for (let i = 0; i < batchFiles.value.length; i++) {
     batchProgress.value.current = i + 1
     const file = batchFiles.value[i]
+    // Keep this file's baked-in photo layout and submitted scaling together,
+    // even if the selection changes while its conversion is in flight.
+    const scaling = printScalingParam.value
 
     try {
       let fileToSend = file
@@ -965,6 +970,7 @@ async function uploadAndPrintBatch() {
         fd.append('orientation', orientation.value)
         fd.append('paper_size', paperSize.value)
         fd.append('borderless', String(!!driverOptions.value.pageSize?.borderless))
+        fd.append('print_scaling', scaling)
         if (invert.value) fd.append('invert', 'true')
         if (compressImages.value) fd.append('compress_images', 'true')
         const convertResp = await apiFetch('/api/convert', { method: 'POST', body: fd }, () => emit('logout'))
@@ -986,7 +992,7 @@ async function uploadAndPrintBatch() {
       form.append('paper_type', paperType.value)
       form.append('driver_options', JSON.stringify(driverOptions.value))
       if (mediaSource.value && mediaSource.value !== 'auto') form.append('media_source', mediaSource.value)
-      form.append('print_scaling', printScalingParam.value)
+      form.append('print_scaling', scaling)
       if (pageRange.value.trim()) form.append('page_range', pageRange.value.trim())
       if (pageSet.value && pageSet.value !== 'all') form.append('page_set', pageSet.value)
       if (mirror.value) form.append('mirror', 'true')
@@ -1031,6 +1037,7 @@ async function convertImagesToPdfViaServer(files, orient, pSize, name, rotations
   const list = Array.isArray(files) ? files : [files]
   const compress = compressImages.value
   const borderless = !!driverOptions.value.pageSize?.borderless
+  const scaling = printScalingParam.value
   const downscaled = []
   for (const f of list) {
     downscaled.push(await downscaleImageIfNeeded(f, compress))
@@ -1054,6 +1061,7 @@ async function convertImagesToPdfViaServer(files, orient, pSize, name, rotations
   if (orient) fd.append('orientation', orient)
   if (pSize) fd.append('paper_size', pSize)
   fd.append('borderless', String(borderless))
+  fd.append('print_scaling', scaling)
   if (invert) fd.append('invert', 'true')
   if (compress) fd.append('compress_images', 'true')
   const resp = await apiFetch('/api/convert', { method: 'POST', body: fd }, () => emit('logout'))
