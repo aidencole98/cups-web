@@ -101,6 +101,8 @@
               v-model:pageRange="reprintForm.pageRange"
               v-model:pageSet="reprintForm.pageSet"
               v-model:mirror="reprintForm.mirror"
+              v-model:photoDateWatermark="reprintForm.photoDateWatermark"
+              :photo-date-visible="/\.(jpe?g|png|gif)$/i.test(reprintRecord?.filename || '')"
               v-model:watermarkText="reprintForm.watermarkText"
               v-model:numberUp="reprintForm.numberUp"
               v-model:numberUpLayout="reprintForm.numberUpLayout"
@@ -157,6 +159,7 @@ function defaultReprintForm() {
     pageRange: '',
     pageSet: 'all',
     mirror: false,
+    photoDateWatermark: false,
     watermarkText: '',
     numberUp: 1,
     numberUpLayout: 'lrtb',
@@ -209,6 +212,7 @@ function openReprintDialog(rec) {
     pageRange: rec.pageRange ?? def.pageRange,
     pageSet: rec.pageSet ?? def.pageSet,
     mirror: rec.mirror ?? def.mirror,
+    photoDateWatermark: !!rec.photoDateWatermark,
     watermarkText: rec.watermarkText ?? def.watermarkText,
     numberUp: rec.numberUp ?? def.numberUp,
     numberUpLayout: rec.numberUpLayout ?? def.numberUpLayout,
@@ -245,6 +249,7 @@ function submitReprint() {
     pageRange: f.pageRange.trim(),
     pageSet: f.pageSet,
     mirror: f.mirror,
+    photoDateWatermark: f.photoDateWatermark,
     watermarkText: f.watermarkText.trim(),
     numberUp: f.numberUp,
     numberUpLayout: f.numberUpLayout,

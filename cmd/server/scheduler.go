@@ -172,7 +172,8 @@ func executeScheduled(s *store.Store, uploads string, task store.ScheduledPrint)
 			}
 		}
 		outPath, cleanup, err := convertImageToPDF(absPath, task.Orientation, imagePaperSize, false, false, imagePDFOptions{
-			Borderless: task.DriverOptions.PageSize != nil && task.DriverOptions.PageSize.Borderless, PrintScaling: task.PrintScaling,
+			PhotoDateWatermark: task.PhotoDateWatermark,
+			Borderless:         task.DriverOptions.PageSize != nil && task.DriverOptions.PageSize.Borderless, PrintScaling: task.PrintScaling,
 		})
 		if err != nil {
 			return "failed", fmt.Errorf("图片转换失败：%w", err)
@@ -258,20 +259,21 @@ func executeScheduled(s *store.Store, uploads string, task store.ScheduledPrint)
 			IsDuplex:   isDuplex,
 			IsColor:    task.IsColor,
 
-			Copies:         task.Copies,
-			Orientation:    task.Orientation,
-			DriverOptions:  task.DriverOptions,
-			PaperSize:      task.PaperSize,
-			PaperType:      task.PaperType,
-			MediaSource:    task.MediaSource,
-			PrintScaling:   task.PrintScaling,
-			PageRange:      task.PageRange,
-			PageSet:        task.PageSet,
-			Mirror:         task.Mirror,
-			WatermarkText:  task.WatermarkText,
-			NumberUp:       task.NumberUp,
-			NumberUpLayout: task.NumberUpLayout,
-			PageBorder:     task.PageBorder,
+			Copies:             task.Copies,
+			Orientation:        task.Orientation,
+			DriverOptions:      task.DriverOptions,
+			PaperSize:          task.PaperSize,
+			PaperType:          task.PaperType,
+			MediaSource:        task.MediaSource,
+			PrintScaling:       task.PrintScaling,
+			PageRange:          task.PageRange,
+			PageSet:            task.PageSet,
+			Mirror:             task.Mirror,
+			PhotoDateWatermark: task.PhotoDateWatermark,
+			WatermarkText:      task.WatermarkText,
+			NumberUp:           task.NumberUp,
+			NumberUpLayout:     task.NumberUpLayout,
+			PageBorder:         task.PageBorder,
 
 			CreatedAt: time.Now().UTC().Format(time.RFC3339),
 		}

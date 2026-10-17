@@ -262,6 +262,9 @@
             {{ scheduleLabel(form) }} 打印 {{ form.photosPerRun }} 张，每张 {{ form.copies }} 份；
             {{ form.loop ? '按顺序循环打印' : form.photos.length + ' 张全部提交后结束' }}。
           </div>
+          <UFormField v-if="form.mode === 'queue' || /\.(jpe?g|png|gif)$/i.test(form.file?.name || form.filename || '')" label="拍摄日期" help="在照片右下角打印 EXIF 拍摄日期，缺少有效日期时跳过。">
+            <USwitch v-model="form.photoDateWatermark" label="打印拍摄日期" />
+          </UFormField>
           <UFormField label="水印文字（可选）">
             <UInput class="w-full" v-model="form.watermarkText" placeholder="留空表示不加水印" />
           </UFormField>
@@ -349,6 +352,7 @@ function emptyForm() {
     color: 'color',
     paperSize: '6inch',
     orientation: 'auto',
+    photoDateWatermark: false,
     watermarkText: ''
   }
 }
@@ -521,6 +525,7 @@ function openEdit(rec) {
     paperSize: rec.paperSize || 'A4',
     driverOptions: rec.driverOptions || {}, photosPerRun: rec.photosPerRun || 1,
     orientation: rec.orientation || 'portrait',
+    photoDateWatermark: !!rec.photoDateWatermark,
     watermarkText: rec.watermarkText || ''
   }
   modalOpen.value = true
@@ -621,6 +626,7 @@ async function createNew(v) {
   fd.append('number_up', '1')
   fd.append('number_up_layout', 'lrtb')
   fd.append('page_border', 'none')
+  fd.append('photo_date_watermark', String(v.photoDateWatermark))
   if (v.watermarkText) fd.append('watermark_text', v.watermarkText)
   fd.append('schedule_type', v.scheduleType)
   if (v.scheduleType === 'once') {
@@ -650,6 +656,7 @@ async function saveEdit(v) {
     driverOptions: v.driverOptions, photosPerRun: v.photosPerRun,
     paperType: v.paperType,
     printScaling: v.printScaling,
+    photoDateWatermark: v.photoDateWatermark,
     watermarkText: v.watermarkText,
     scheduleType: v.scheduleType,
     scheduleTime: v.scheduleTime,
@@ -724,6 +731,7 @@ function buildPayloadFromRecord(rec, overrides = {}) {
     pageRange: rec.pageRange || '',
     pageSet: rec.pageSet || 'all',
     mirror: !!rec.mirror,
+    photoDateWatermark: !!rec.photoDateWatermark,
     watermarkText: rec.watermarkText || '',
     numberUp: rec.numberUp || 1,
     numberUpLayout: rec.numberUpLayout || 'lrtb',

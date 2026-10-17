@@ -234,6 +234,11 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := addColumnIfMissing(ctx, s.DB, "print_jobs", "is_color INTEGER NOT NULL DEFAULT 1"); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
+	for _, table := range []string{"print_jobs", "scheduled_prints"} {
+		if err := addColumnIfMissing(ctx, s.DB, table, "photo_date_watermark INTEGER NOT NULL DEFAULT 0"); err != nil {
+			return err
+		}
+	}
 	// 完整打印参数落库，供「重新打印」精确预填第一次的每一项设置（Issue #68）。
 	// 旧库热升级：老记录这些列取默认值，重打时即退化为合理默认。
 	printJobOptionCols := []string{

@@ -35,19 +35,20 @@ type printRecordResponse struct {
 	IsColor       bool              `json:"isColor"`
 
 	// 完整打印参数快照，供前端「重新打印」预填第一次的设置（Issue #68）。
-	Copies         int    `json:"copies"`
-	Orientation    string `json:"orientation"`
-	PaperSize      string `json:"paperSize"`
-	PaperType      string `json:"paperType"`
-	MediaSource    string `json:"mediaSource"`
-	PrintScaling   string `json:"printScaling"`
-	PageRange      string `json:"pageRange"`
-	PageSet        string `json:"pageSet"`
-	Mirror         bool   `json:"mirror"`
-	WatermarkText  string `json:"watermarkText"`
-	NumberUp       int    `json:"numberUp"`
-	NumberUpLayout string `json:"numberUpLayout"`
-	PageBorder     string `json:"pageBorder"`
+	Copies             int    `json:"copies"`
+	Orientation        string `json:"orientation"`
+	PaperSize          string `json:"paperSize"`
+	PaperType          string `json:"paperType"`
+	MediaSource        string `json:"mediaSource"`
+	PrintScaling       string `json:"printScaling"`
+	PageRange          string `json:"pageRange"`
+	PageSet            string `json:"pageSet"`
+	Mirror             bool   `json:"mirror"`
+	PhotoDateWatermark bool   `json:"photoDateWatermark"`
+	WatermarkText      string `json:"watermarkText"`
+	NumberUp           int    `json:"numberUp"`
+	NumberUpLayout     string `json:"numberUpLayout"`
+	PageBorder         string `json:"pageBorder"`
 
 	CreatedAt string `json:"createdAt"`
 }
@@ -215,20 +216,21 @@ func mapPrintRecords(records []store.PrintRecord) []printRecordResponse {
 			IsDuplex:   rec.IsDuplex,
 			IsColor:    rec.IsColor,
 
-			Copies:         rec.Copies,
-			Orientation:    rec.Orientation,
-			DriverOptions:  rec.DriverOptions,
-			PaperSize:      rec.PaperSize,
-			PaperType:      rec.PaperType,
-			MediaSource:    rec.MediaSource,
-			PrintScaling:   rec.PrintScaling,
-			PageRange:      rec.PageRange,
-			PageSet:        rec.PageSet,
-			Mirror:         rec.Mirror,
-			WatermarkText:  rec.WatermarkText,
-			NumberUp:       rec.NumberUp,
-			NumberUpLayout: rec.NumberUpLayout,
-			PageBorder:     rec.PageBorder,
+			Copies:             rec.Copies,
+			Orientation:        rec.Orientation,
+			DriverOptions:      rec.DriverOptions,
+			PaperSize:          rec.PaperSize,
+			PaperType:          rec.PaperType,
+			MediaSource:        rec.MediaSource,
+			PrintScaling:       rec.PrintScaling,
+			PageRange:          rec.PageRange,
+			PageSet:            rec.PageSet,
+			Mirror:             rec.Mirror,
+			PhotoDateWatermark: rec.PhotoDateWatermark,
+			WatermarkText:      rec.WatermarkText,
+			NumberUp:           rec.NumberUp,
+			NumberUpLayout:     rec.NumberUpLayout,
+			PageBorder:         rec.PageBorder,
 
 			CreatedAt: rec.CreatedAt,
 		})
@@ -237,20 +239,21 @@ func mapPrintRecords(records []store.PrintRecord) []printRecordResponse {
 }
 
 type reprintRequest struct {
-	DriverOptions ipp.DriverOptions `json:"driverOptions"`
-	Printer       string            `json:"printer"`
-	Duplex        bool              `json:"duplex"`
-	Color         bool              `json:"color"`
-	Copies        int               `json:"copies"`
-	Orientation   string            `json:"orientation"`
-	PaperSize     string            `json:"paperSize"`
-	PaperType     string            `json:"paperType"`
-	MediaSource   string            `json:"mediaSource"`
-	PrintScaling  string            `json:"printScaling"`
-	PageRange     string            `json:"pageRange"`
-	PageSet       string            `json:"pageSet"`
-	Mirror        bool              `json:"mirror"`
-	WatermarkText string            `json:"watermarkText"`
+	DriverOptions      ipp.DriverOptions `json:"driverOptions"`
+	Printer            string            `json:"printer"`
+	Duplex             bool              `json:"duplex"`
+	Color              bool              `json:"color"`
+	Copies             int               `json:"copies"`
+	Orientation        string            `json:"orientation"`
+	PaperSize          string            `json:"paperSize"`
+	PaperType          string            `json:"paperType"`
+	MediaSource        string            `json:"mediaSource"`
+	PrintScaling       string            `json:"printScaling"`
+	PageRange          string            `json:"pageRange"`
+	PageSet            string            `json:"pageSet"`
+	Mirror             bool              `json:"mirror"`
+	PhotoDateWatermark bool              `json:"photoDateWatermark"`
+	WatermarkText      string            `json:"watermarkText"`
 
 	NumberUp       int    `json:"numberUp"`
 	NumberUpLayout string `json:"numberUpLayout"`
@@ -403,7 +406,8 @@ func reprintHandler(w http.ResponseWriter, r *http.Request) {
 		printMime = "application/pdf"
 	case fileKindImage:
 		outPath, cleanup, err := convertImageToPDF(storedAbs, req.Orientation, req.PaperSize, false, false, imagePDFOptions{
-			Borderless: req.DriverOptions.PageSize != nil && req.DriverOptions.PageSize.Borderless, PrintScaling: req.PrintScaling,
+			PhotoDateWatermark: req.PhotoDateWatermark,
+			Borderless:         req.DriverOptions.PageSize != nil && req.DriverOptions.PageSize.Borderless, PrintScaling: req.PrintScaling,
 		})
 		if err != nil {
 			_ = os.Remove(storedAbs)
@@ -511,20 +515,21 @@ func reprintHandler(w http.ResponseWriter, r *http.Request) {
 			IsDuplex:   req.Duplex,
 			IsColor:    req.Color,
 
-			Copies:         req.Copies,
-			Orientation:    req.Orientation,
-			DriverOptions:  req.DriverOptions,
-			PaperSize:      req.PaperSize,
-			PaperType:      req.PaperType,
-			MediaSource:    req.MediaSource,
-			PrintScaling:   req.PrintScaling,
-			PageRange:      req.PageRange,
-			PageSet:        req.PageSet,
-			Mirror:         req.Mirror,
-			WatermarkText:  req.WatermarkText,
-			NumberUp:       req.NumberUp,
-			NumberUpLayout: req.NumberUpLayout,
-			PageBorder:     req.PageBorder,
+			Copies:             req.Copies,
+			Orientation:        req.Orientation,
+			DriverOptions:      req.DriverOptions,
+			PaperSize:          req.PaperSize,
+			PaperType:          req.PaperType,
+			MediaSource:        req.MediaSource,
+			PrintScaling:       req.PrintScaling,
+			PageRange:          req.PageRange,
+			PageSet:            req.PageSet,
+			Mirror:             req.Mirror,
+			PhotoDateWatermark: req.PhotoDateWatermark,
+			WatermarkText:      req.WatermarkText,
+			NumberUp:           req.NumberUp,
+			NumberUpLayout:     req.NumberUpLayout,
+			PageBorder:         req.PageBorder,
 
 			CreatedAt: time.Now().UTC().Format(time.RFC3339),
 		}

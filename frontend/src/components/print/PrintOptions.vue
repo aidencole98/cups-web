@@ -159,6 +159,9 @@
               </label>
             </UFormField>
 
+            <UFormField v-if="photoDateVisible" label="拍摄日期" help="读取照片 EXIF，缺少有效拍摄日期时跳过；转换为 PDF 可查看效果。">
+              <USwitch :model-value="photoDateWatermark" :disabled="photoDateDisabled || printing" label="打印拍摄日期" @update:model-value="$emit('update:photoDateWatermark', $event)" />
+            </UFormField>
             <!-- 水印文字 -->
             <UFormField label="水印文字" hint="留空=不添加水印；如：仅供XX使用">
               <UInput
@@ -200,6 +203,9 @@ const props = defineProps({
   pageRange: { type: String, default: '' },
   pageSet: { type: String, default: 'all' },
   mirror: { type: Boolean, default: false },
+  photoDateWatermark: { type: Boolean, default: false },
+  photoDateVisible: { type: Boolean, default: false },
+  photoDateDisabled: { type: Boolean, default: false },
   watermarkText: { type: String, default: '' },
   numberUp: { type: Number, default: 1 },
   numberUpLayout: { type: String, default: 'lrtb' },
@@ -212,7 +218,7 @@ const emit = defineEmits([
   'update:isColor', 'update:invert', 'update:compressImages',
   'update:duplex', 'update:copies',
   'update:paperSize', 'update:paperType', 'update:mediaSource', 'update:printScaling', 'update:scalePercent', 'update:pageRange',
-  'update:pageSet', 'update:mirror', 'update:watermarkText',
+  'update:photoDateWatermark', 'update:pageSet', 'update:mirror', 'update:watermarkText',
   'update:numberUp', 'update:numberUpLayout', 'update:pageBorder'
 ])
 
@@ -279,6 +285,7 @@ const advancedSummary = computed(() => {
     if (props.pageBorder === 'single') parts.push('带边框')
   }
   if (props.mirror) parts.push('镜像')
+  if (props.photoDateWatermark) parts.push('拍摄日期')
   if (props.watermarkText) parts.push(`水印: ${props.watermarkText}`)
   return parts.join(' / ')
 })

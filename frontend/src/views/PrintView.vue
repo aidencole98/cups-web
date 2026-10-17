@@ -264,6 +264,9 @@
           v-model:pageRange="pageRange"
           v-model:pageSet="pageSet"
           v-model:mirror="mirror"
+          v-model:photoDateWatermark="photoDateWatermark"
+          :photo-date-visible="printMode === 'standard' && (isImageKind || batchFiles.some(f => f.type.startsWith('image/')))"
+          :photo-date-disabled="converting || printing || batchPrinting"
           v-model:watermarkText="watermarkText"
           v-model:numberUp="numberUp"
           v-model:numberUpLayout="numberUpLayout"
@@ -398,6 +401,7 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { apiFetch, readError } from '../utils/api'
 import { isOfficeFile, isOFDFile } from '../utils/file'
+import { readPhotoDate } from '../utils/photo-date'
 import { downscaleImageIfNeeded } from '../utils/image'
 import FileUpload from '../components/print/FileUpload.vue'
 import IdCardUpload from '../components/print/IdCardUpload.vue'
@@ -461,6 +465,7 @@ const scalePercent = ref(100)
 const pageRange = ref('')
 const pageSet = ref('all')
 const mirror = ref(false)
+const photoDateWatermark = ref(false)
 const watermarkText = ref('')
 const numberUp = ref(1)
 const numberUpLayout = ref('lrtb')
@@ -605,7 +610,7 @@ const isTextKind = computed(() => selectedFile.value && (selectedFile.value.type
 const isInvertible = computed(() => isImageKind.value && !isColor.value)
 // 切换到非「图片+黑白」场景时重置反转，避免彩色时残留反色
 watch(isInvertible, (v) => { if (!v) invert.value = false })
-watch(compressImages, () => {
+watch([compressImages, photoDateWatermark], () => {
   imageConversionVersion++
   if (!isImageKind.value) return
   pdfBlob.value = null
@@ -959,12 +964,17 @@ async function uploadAndPrintBatch() {
     // Keep this file's baked-in photo layout and submitted scaling together,
     // even if the selection changes while its conversion is in flight.
     const scaling = printScalingParam.value
+    const dateEnabled = photoDateWatermark.value
 
     try {
       let fileToSend = file
       // 非 PDF 文件需要先转换
       if (file.type !== 'application/pdf') {
         const fd = new FormData()
+        if (dateEnabled && file.type.startsWith('image/')) {
+          fd.append('photo_date_watermark', 'true')
+          fd.append('photo_dates', JSON.stringify([await readPhotoDate(file)]))
+        }
         const uploadFile = compressImages.value ? await downscaleImageIfNeeded(file, true) : file
         fd.append('file', uploadFile, uploadFile.name)
         fd.append('orientation', orientation.value)
@@ -996,6 +1006,7 @@ async function uploadAndPrintBatch() {
       if (pageRange.value.trim()) form.append('page_range', pageRange.value.trim())
       if (pageSet.value && pageSet.value !== 'all') form.append('page_set', pageSet.value)
       if (mirror.value) form.append('mirror', 'true')
+      form.append('photo_date_watermark', String(dateEnabled))
       if (watermarkText.value.trim()) form.append('watermark_text', watermarkText.value.trim())
       if (numberUp.value > 1) {
         form.append('number_up', String(numberUp.value))
@@ -1038,8 +1049,11 @@ async function convertImagesToPdfViaServer(files, orient, pSize, name, rotations
   const compress = compressImages.value
   const borderless = !!driverOptions.value.pageSize?.borderless
   const scaling = printScalingParam.value
+  const dateEnabled = photoDateWatermark.value
+  const dates = []
   const downscaled = []
   for (const f of list) {
+    if (dateEnabled) dates.push(await readPhotoDate(f))
     downscaled.push(await downscaleImageIfNeeded(f, compress))
   }
   const fd = new FormData()
@@ -1058,6 +1072,7 @@ async function convertImagesToPdfViaServer(files, orient, pSize, name, rotations
     }
   }
 
+  if (dateEnabled) { fd.append('photo_date_watermark', 'true'); fd.append('photo_dates', JSON.stringify(dates)) }
   if (orient) fd.append('orientation', orient)
   if (pSize) fd.append('paper_size', pSize)
   fd.append('borderless', String(borderless))
@@ -1167,8 +1182,8 @@ async function uploadAndPrint() {
 
   const fileToSend = pdfBlob.value || selectedFile.value
   if (!fileToSend && !isMultiImage.value) { toast.add({ title: '请先选择文件', color: 'warning' }); return }
-  // 多图或启用压缩的单图先转 PDF，确保预览和打印使用相同的压缩结果。
-  if ((isMultiImage.value || (compressImages.value && isImageKind.value)) && !pdfBlob.value) {
+  // 多图、压缩或日期水印先转 PDF，确保预览与打印使用同一份结果。
+  if ((isMultiImage.value || ((compressImages.value || photoDateWatermark.value) && isImageKind.value)) && !pdfBlob.value) {
     await convertToPdf()
     if (!pdfBlob.value) return
   }
@@ -1194,6 +1209,7 @@ async function uploadAndPrint() {
   if (mirror.value) form.append('mirror', 'true')
   // 单图图片直接打印（未先转 PDF）时把黑白反转带给后端；已转成 PDF 的不传（反色已并入）
   if (invert.value && !pdfBlob.value && isImageKind.value) form.append('invert', 'true')
+  form.append('photo_date_watermark', String(photoDateWatermark.value))
   if (watermarkText.value.trim()) form.append('watermark_text', watermarkText.value.trim())
   if (numberUp.value > 1) {
     form.append('number_up', String(numberUp.value))
@@ -1263,6 +1279,7 @@ async function handleReprint(payload) {
         pageRange: payload.pageRange,
         pageSet: payload.pageSet,
         mirror: payload.mirror,
+        photoDateWatermark: payload.photoDateWatermark,
         watermarkText: payload.watermarkText,
         numberUp: payload.numberUp,
         numberUpLayout: payload.numberUpLayout,

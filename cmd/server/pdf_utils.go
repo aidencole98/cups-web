@@ -282,14 +282,16 @@ func getOrientationCode(orientation string) string {
 }
 
 type imagePDFOptions struct {
-	Borderless   bool
-	PrintScaling string
+	PhotoDateWatermark bool
+	PhotoDates         []string
+	Borderless         bool
+	PrintScaling       string
 }
 
 // drawPDFImage shares the same photo layout for a whole page and a grid cell.
 // fill enlarges without stretching, then clips at the content area's edges.
 // Other scaling modes retain the existing fit layout before CUPS processing.
-func drawPDFImage(pdf *gofpdf.Fpdf, path string, cfg image.Config, x, y, width, height float64, scaling string) {
+func drawPDFImage(pdf *gofpdf.Fpdf, path string, cfg image.Config, x, y, width, height float64, scaling string, date string) {
 	if width <= 0 || height <= 0 || cfg.Width <= 0 || cfg.Height <= 0 {
 		pdf.SetErrorf("invalid image content area")
 		return
@@ -298,13 +300,21 @@ func drawPDFImage(pdf *gofpdf.Fpdf, path string, cfg image.Config, x, y, width, 
 	if scaling == "fill" {
 		scale = math.Max(width/float64(cfg.Width), height/float64(cfg.Height))
 		pdf.ClipRect(x, y, width, height, false)
-		defer pdf.ClipEnd()
 	}
 	w, h := float64(cfg.Width)*scale, float64(cfg.Height)*scale
 	// fill can place a wide photo left of the page. Without this flag gofpdf
 	// treats a negative x as the current cursor position, breaking centering.
 	opts := gofpdf.ImageOptions{ReadDpi: true, AllowNegativePosition: true}
-	pdf.ImageOptions(path, x+(width-w)/2, y+(height-h)/2, w, h, false, opts, 0, "")
+	ix, iy := x+(width-w)/2, y+(height-h)/2
+	pdf.ImageOptions(path, ix, iy, w, h, false, opts, 0, "")
+	if scaling == "fill" {
+		pdf.ClipEnd()
+	}
+	if scaling == "fill" {
+		drawPhotoDate(pdf, date, x, y, width, height)
+	} else {
+		drawPhotoDate(pdf, date, ix, iy, w, h)
+	}
 }
 
 func convertImageToPDF(inputPath string, orientation string, paperSize string, invert bool, compress bool, options ...imagePDFOptions) (string, func(), error) {
@@ -317,6 +327,8 @@ func convertImageToPDF(inputPath string, orientation string, paperSize string, i
 		return "", nil, err
 	}
 	cleanup := func() { _ = os.RemoveAll(tmpDir) }
+
+	date := resolvedPhotoDate(inputPath, layout.PhotoDateWatermark, layout.PhotoDates, 0)
 
 	// 大图先下采样再嵌入，避免 PDF 体积过大导致移动端预览/下载失败（Issue #22）。
 	imgPath, cfg, err := downscaleImageIfNeeded(inputPath, tmpDir)
@@ -368,7 +380,7 @@ func convertImageToPDF(inputPath string, orientation string, paperSize string, i
 	pageW, pageH := pdf.GetPageSize()
 	maxW := pageW - 2*marginMM
 	maxH := pageH - 2*marginMM
-	drawPDFImage(pdf, imgPath, cfg, marginMM, marginMM, maxW, maxH, layout.PrintScaling)
+	drawPDFImage(pdf, imgPath, cfg, marginMM, marginMM, maxW, maxH, layout.PrintScaling, date)
 
 	outPath := filepath.Join(tmpDir, "image.pdf")
 	if err := pdf.OutputFileAndClose(outPath); err != nil {
@@ -478,6 +490,7 @@ func convertImagesMultiToPDF(fileHeaders []*multipart.FileHeader, orientation st
 
 	// 先把所有上传流落到临时文件，便于 gofpdf 直接读取路径
 	type savedImage struct {
+		date string
 		path string
 		cfg  image.Config
 	}
@@ -508,6 +521,8 @@ func convertImagesMultiToPDF(fileHeaders []*multipart.FileHeader, orientation st
 		dst.Close()
 		src.Close()
 
+		date := resolvedPhotoDate(imgPath, layout.PhotoDateWatermark, layout.PhotoDates, idx)
+
 		// 大图下采样：移动端合并若干张 10M+ 原图时最容易卡在这一步
 		finalPath, cfg, err := downscaleImageIfNeeded(imgPath, tmpDir)
 		if err != nil {
@@ -531,7 +546,7 @@ func convertImagesMultiToPDF(fileHeaders []*multipart.FileHeader, orientation st
 				return "", nil, err
 			}
 		}
-		saved = append(saved, savedImage{path: finalPath, cfg: cfg})
+		saved = append(saved, savedImage{path: finalPath, cfg: cfg, date: date})
 	}
 
 	// 构造 PDF
@@ -562,7 +577,7 @@ func convertImagesMultiToPDF(fileHeaders []*multipart.FileHeader, orientation st
 	const gapMM = 4.0
 
 	drawImage := func(img savedImage, slotX, slotY, slotW, slotH float64) {
-		drawPDFImage(pdf, img.path, img.cfg, slotX, slotY, slotW, slotH, layout.PrintScaling)
+		drawPDFImage(pdf, img.path, img.cfg, slotX, slotY, slotW, slotH, layout.PrintScaling, img.date)
 	}
 
 	for i, img := range saved {

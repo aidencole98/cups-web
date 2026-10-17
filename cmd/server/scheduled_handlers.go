@@ -49,21 +49,22 @@ type scheduledPrintResponse struct {
 	PrinterURI string `json:"printerUri"`
 	Filename   string `json:"filename"`
 
-	IsDuplex       bool   `json:"isDuplex"`
-	IsColor        bool   `json:"isColor"`
-	Copies         int    `json:"copies"`
-	Orientation    string `json:"orientation"`
-	PaperSize      string `json:"paperSize"`
-	PaperType      string `json:"paperType"`
-	MediaSource    string `json:"mediaSource"`
-	PrintScaling   string `json:"printScaling"`
-	PageRange      string `json:"pageRange"`
-	PageSet        string `json:"pageSet"`
-	Mirror         bool   `json:"mirror"`
-	WatermarkText  string `json:"watermarkText"`
-	NumberUp       int    `json:"numberUp"`
-	NumberUpLayout string `json:"numberUpLayout"`
-	PageBorder     string `json:"pageBorder"`
+	IsDuplex           bool   `json:"isDuplex"`
+	IsColor            bool   `json:"isColor"`
+	Copies             int    `json:"copies"`
+	Orientation        string `json:"orientation"`
+	PaperSize          string `json:"paperSize"`
+	PaperType          string `json:"paperType"`
+	MediaSource        string `json:"mediaSource"`
+	PrintScaling       string `json:"printScaling"`
+	PageRange          string `json:"pageRange"`
+	PageSet            string `json:"pageSet"`
+	Mirror             bool   `json:"mirror"`
+	PhotoDateWatermark bool   `json:"photoDateWatermark"`
+	WatermarkText      string `json:"watermarkText"`
+	NumberUp           int    `json:"numberUp"`
+	NumberUpLayout     string `json:"numberUpLayout"`
+	PageBorder         string `json:"pageBorder"`
 
 	ScheduleType    string `json:"scheduleType"`
 	ScheduleTime    string `json:"scheduleTime"`
@@ -102,22 +103,23 @@ func mapScheduledPrint(rec store.ScheduledPrint) scheduledPrintResponse {
 		PrinterURI: rec.PrinterURI,
 		Filename:   rec.Filename,
 
-		IsDuplex:       rec.IsDuplex,
-		IsColor:        rec.IsColor,
-		Copies:         rec.Copies,
-		Orientation:    rec.Orientation,
-		DriverOptions:  rec.DriverOptions,
-		PaperSize:      rec.PaperSize,
-		PaperType:      rec.PaperType,
-		MediaSource:    rec.MediaSource,
-		PrintScaling:   rec.PrintScaling,
-		PageRange:      rec.PageRange,
-		PageSet:        rec.PageSet,
-		Mirror:         rec.Mirror,
-		WatermarkText:  rec.WatermarkText,
-		NumberUp:       rec.NumberUp,
-		NumberUpLayout: rec.NumberUpLayout,
-		PageBorder:     rec.PageBorder,
+		IsDuplex:           rec.IsDuplex,
+		IsColor:            rec.IsColor,
+		Copies:             rec.Copies,
+		Orientation:        rec.Orientation,
+		DriverOptions:      rec.DriverOptions,
+		PaperSize:          rec.PaperSize,
+		PaperType:          rec.PaperType,
+		MediaSource:        rec.MediaSource,
+		PrintScaling:       rec.PrintScaling,
+		PageRange:          rec.PageRange,
+		PageSet:            rec.PageSet,
+		Mirror:             rec.Mirror,
+		PhotoDateWatermark: rec.PhotoDateWatermark,
+		WatermarkText:      rec.WatermarkText,
+		NumberUp:           rec.NumberUp,
+		NumberUpLayout:     rec.NumberUpLayout,
+		PageBorder:         rec.PageBorder,
 
 		ScheduleType:    rec.ScheduleType,
 		ScheduleTime:    rec.ScheduleTime,
@@ -544,21 +546,22 @@ type scheduledUpdatePayload struct {
 	PrinterURI    string             `json:"printerUri"`
 	Enabled       *bool              `json:"enabled"`
 
-	IsDuplex       bool   `json:"isDuplex"`
-	IsColor        bool   `json:"isColor"`
-	Copies         int    `json:"copies"`
-	Orientation    string `json:"orientation"`
-	PaperSize      string `json:"paperSize"`
-	PaperType      string `json:"paperType"`
-	MediaSource    string `json:"mediaSource"`
-	PrintScaling   string `json:"printScaling"`
-	PageRange      string `json:"pageRange"`
-	PageSet        string `json:"pageSet"`
-	Mirror         bool   `json:"mirror"`
-	WatermarkText  string `json:"watermarkText"`
-	NumberUp       int    `json:"numberUp"`
-	NumberUpLayout string `json:"numberUpLayout"`
-	PageBorder     string `json:"pageBorder"`
+	IsDuplex           bool   `json:"isDuplex"`
+	IsColor            bool   `json:"isColor"`
+	Copies             int    `json:"copies"`
+	Orientation        string `json:"orientation"`
+	PaperSize          string `json:"paperSize"`
+	PaperType          string `json:"paperType"`
+	MediaSource        string `json:"mediaSource"`
+	PrintScaling       string `json:"printScaling"`
+	PageRange          string `json:"pageRange"`
+	PageSet            string `json:"pageSet"`
+	Mirror             bool   `json:"mirror"`
+	PhotoDateWatermark *bool  `json:"photoDateWatermark"`
+	WatermarkText      string `json:"watermarkText"`
+	NumberUp           int    `json:"numberUp"`
+	NumberUpLayout     string `json:"numberUpLayout"`
+	PageBorder         string `json:"pageBorder"`
 
 	ScheduleType    string `json:"scheduleType"`
 	ScheduleTime    string `json:"scheduleTime"`
@@ -596,6 +599,9 @@ func applyScheduledPayload(rec *store.ScheduledPrint, p scheduledUpdatePayload) 
 	rec.PageRange = p.PageRange
 	rec.PageSet = p.PageSet
 	rec.Mirror = p.Mirror
+	if p.PhotoDateWatermark != nil {
+		rec.PhotoDateWatermark = *p.PhotoDateWatermark
+	}
 	rec.WatermarkText = strings.TrimSpace(p.WatermarkText)
 	rec.NumberUp = p.NumberUp
 	rec.NumberUpLayout = p.NumberUpLayout
@@ -651,21 +657,22 @@ func buildScheduledRecordFromForm(r *http.Request, userID int64, files []store.S
 		Filename:   files[0].Filename,
 		StoredPath: files[0].StoredPath,
 
-		IsDuplex:       getBool("duplex"),
-		IsColor:        getBool("color"),
-		Copies:         getInt("copies", 1),
-		Orientation:    getStr("orientation"),
-		PaperSize:      driverOpts.PaperSize(getStr("paper_size")),
-		PaperType:      getStr("paper_type"),
-		MediaSource:    getStr("media_source"),
-		PrintScaling:   getStr("print_scaling"),
-		PageRange:      strings.TrimSpace(getStr("page_range")),
-		PageSet:        getStr("page_set"),
-		Mirror:         getBool("mirror"),
-		WatermarkText:  strings.TrimSpace(getStr("watermark_text")),
-		NumberUp:       getInt("number_up", 1),
-		NumberUpLayout: getStr("number_up_layout"),
-		PageBorder:     getStr("page_border"),
+		IsDuplex:           getBool("duplex"),
+		IsColor:            getBool("color"),
+		Copies:             getInt("copies", 1),
+		Orientation:        getStr("orientation"),
+		PaperSize:          driverOpts.PaperSize(getStr("paper_size")),
+		PaperType:          getStr("paper_type"),
+		MediaSource:        getStr("media_source"),
+		PrintScaling:       getStr("print_scaling"),
+		PageRange:          strings.TrimSpace(getStr("page_range")),
+		PageSet:            getStr("page_set"),
+		Mirror:             getBool("mirror"),
+		PhotoDateWatermark: getBool("photo_date_watermark"),
+		WatermarkText:      strings.TrimSpace(getStr("watermark_text")),
+		NumberUp:           getInt("number_up", 1),
+		NumberUpLayout:     getStr("number_up_layout"),
+		PageBorder:         getStr("page_border"),
 
 		ScheduleType:    getStr("schedule_type"),
 		ScheduleTime:    getStr("schedule_time"),

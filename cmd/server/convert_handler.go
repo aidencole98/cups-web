@@ -28,8 +28,9 @@ func convertHandler(w http.ResponseWriter, r *http.Request) {
 	orientation := r.FormValue("orientation")
 	paperSize := r.FormValue("paper_size")
 	imageLayout := imagePDFOptions{
-		Borderless:   r.FormValue("borderless") == "true",
-		PrintScaling: r.FormValue("print_scaling"),
+		PhotoDateWatermark: r.FormValue("photo_date_watermark") == "true",
+		Borderless:         r.FormValue("borderless") == "true",
+		PrintScaling:       r.FormValue("print_scaling"),
 	}
 	// 黑白反转（issue #87）：仅对图片转 PDF 生效
 	invert := r.FormValue("invert") == "true"
@@ -43,6 +44,11 @@ func convertHandler(w http.ResponseWriter, r *http.Request) {
 	// 优先处理多文件字段（图片合并场景）
 	if r.MultipartForm != nil {
 		if headers, ok := r.MultipartForm.File["files"]; ok && len(headers) > 0 {
+			imageLayout.PhotoDates, err = parsePhotoDates(r.FormValue("photo_dates"), len(headers))
+			if err != nil {
+				writeJSONError(w, http.StatusBadRequest, err.Error())
+				return
+			}
 			rotations := parseRotations(r.FormValue("rotations"))
 			// per_page(issue #37):把多张图片排到同一页的网格布局。默认 1(每张一页)。
 			perPage := 1
@@ -70,6 +76,11 @@ func convertHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	imageLayout.PhotoDates, err = parsePhotoDates(r.FormValue("photo_dates"), 1)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	// 单文件分支
 	file, fh, err := r.FormFile("file")
 	if err != nil {

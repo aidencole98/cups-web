@@ -366,6 +366,12 @@ KV 表。当前键：`retention_days`（`0` = 永久）、`session_hash_key` / `
 - 图片 `print_scaling=fill` 在生成 PDF 时等比放大并居中裁切，单图按内容区、多图按各格子裁切；`fit` 完整显示。普通打印、转换、原图重打、定时任务共用排版，前端切换填充时必须使旧 PDF 缓存失效。已有 PDF 不按照片重新裁切。
 - 多张队列仍逐张提交，在下一张开始前持久化成功进度；整个批次只推进一个调度点。磁盘上的任务在批次运行期间保持暂停，避免中断后重复打印不确定结果。详见 [docs/printer-options.md](docs/printer-options.md)。
 
+### 照片拍摄日期水印（issue #124）
+
+- `photo_date_watermark`（multipart）/ `photoDateWatermark`（JSON）默认关闭，在打印记录和定时任务中持久化。普通打印、重打、定时执行共用图片转 PDF 绘制逻辑。
+- 只读取 JPEG/PNG EXIF `DateTimeOriginal`，不以修改时间或当前日期替代；缺失或无效时跳过。浏览器必须在压缩前提取日期，用 `/api/convert` 的 `photo_dates` 数组按图片顺序传递；后端严格校验日期与数量。
+- 日期在图片旋转、适应/填充排版后按每张可见区域右下角定位；开启/关闭须使旧 PDF 缓存失效。已生成 PDF 的日期直接保留，重打不重复叠加。详见 [docs/printer-options.md](docs/printer-options.md)。
+
 ## 🧹 维护任务
 
 `maintenance.go` 每小时：读 `retention_days`（`0` 跳过）→ 删过期 `print_jobs` + 文件 → `VACUUM` + `wal_checkpoint`。管理员可 `POST /api/admin/cleanup` 手动触发。

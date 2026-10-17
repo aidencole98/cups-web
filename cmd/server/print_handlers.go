@@ -55,6 +55,7 @@ func printHandler(w http.ResponseWriter, r *http.Request) {
 	isColor := r.FormValue("color") == "true"
 	// 黑白反转（issue #87）：仅图片转 PDF 生效，不落库（reprint 不保留）
 	invert := r.FormValue("invert") == "true"
+	photoDateWatermark := r.FormValue("photo_date_watermark") == "true"
 	compress := r.FormValue("compress_images") == "true"
 
 	// Extended print options
@@ -187,7 +188,8 @@ func printHandler(w http.ResponseWriter, r *http.Request) {
 		printMime = "application/pdf"
 	case fileKindImage:
 		outPath, cleanup, err := convertImageToPDF(storedAbs, orientation, paperSize, invert, compress, imagePDFOptions{
-			Borderless: driverOpts.PageSize != nil && driverOpts.PageSize.Borderless, PrintScaling: printScaling,
+			PhotoDateWatermark: photoDateWatermark,
+			Borderless:         driverOpts.PageSize != nil && driverOpts.PageSize.Borderless, PrintScaling: printScaling,
 		})
 		if err != nil {
 			_ = os.Remove(storedAbs)
@@ -315,20 +317,21 @@ func printHandler(w http.ResponseWriter, r *http.Request) {
 				IsDuplex:   isDuplex,
 				IsColor:    isColor,
 
-				Copies:         copies,
-				Orientation:    orientation,
-				DriverOptions:  driverOpts,
-				PaperSize:      paperSize,
-				PaperType:      paperType,
-				MediaSource:    mediaSource,
-				PrintScaling:   origPrintScaling,
-				PageRange:      pageRange,
-				PageSet:        origPageSet,
-				Mirror:         mirror,
-				WatermarkText:  watermarkText,
-				NumberUp:       numberUp,
-				NumberUpLayout: numberUpLayout,
-				PageBorder:     pageBorder,
+				Copies:             copies,
+				Orientation:        orientation,
+				DriverOptions:      driverOpts,
+				PaperSize:          paperSize,
+				PaperType:          paperType,
+				MediaSource:        mediaSource,
+				PrintScaling:       origPrintScaling,
+				PageRange:          pageRange,
+				PageSet:            origPageSet,
+				Mirror:             mirror,
+				PhotoDateWatermark: photoDateWatermark,
+				WatermarkText:      watermarkText,
+				NumberUp:           numberUp,
+				NumberUpLayout:     numberUpLayout,
+				PageBorder:         pageBorder,
 
 				CreatedAt: time.Now().UTC().Format(time.RFC3339),
 			}

@@ -52,6 +52,22 @@ PPD 的 ImageableArea 覆盖整张纸时识别为无边距，包括可打印区�
 
 已有 PDF 的内容白边不会自动裁掉。重新打印时，有原图的记录可重新适应/填充；只有 PDF 的记录按已有页面打印，无法按原图重新排版，需要重新上传原图才能改变照片布局。
 
+## 照片拍摄日期（issue #124）
+
+普通照片打印的「高级选项」与照片定时任务提供「打印拍摄日期」开关，默认关闭。开启后，在每张照片最终可见区域的右下角绘制橙色日期及轻微阴影，格式为 `2026年10月3日`。适应布局贴照片边缘，填充布局贴裁切后的内容区边缘；多图排版在每张照片内分别绘制。点击「转换为 PDF」可查看结果，修改开关会使旧 PDF 缓存失效。
+
+只使用 JPEG EXIF 或 PNG `eXIf` 中的 `DateTimeOriginal`（拍摄时间），保留其年月日，不做时区换算。缺失、损坏或日期无效时正常打印该照片并跳过日期，不使用文件时间或执行时间替代。GIF 通常没有 EXIF；HEIC 经现有浏览器转码后若未保留拍摄日期，也会跳过。本功能不改变既有 EXIF 方向处理。
+
+接口沿用现有路由：
+
+- `POST /api/convert`、`POST /api/print`、`POST /api/scheduled-prints` 的 multipart 使用 `photo_date_watermark=true`。
+- `PUT /api/scheduled-prints/{id}`、`POST /api/print-records/{id}/reprint` 的 JSON 使用 `photoDateWatermark: true`；列表响应也包含此布尔字段。
+- `/api/convert` 可额外提交 `photo_dates` JSON 字符串数组，如 `["2026-10-03", ""]`，按 `file`/`files` 顺序逐图对应，空串表示没有有效拍摄日期。数组必须与文件数量相同；日期严格校验为有效的 `YYYY-MM-DD`。不提供数组时由服务端读取原图。浏览器在压缩前读取 EXIF，并通过该字段传递日期，因此压缩不会丢失日期；此字段只提供显示内容，不参与文件定位。
+
+`print_jobs` 和 `scheduled_prints` 幂等增加 `photo_date_watermark INTEGER NOT NULL DEFAULT 0`，保存打印、重打和定时任务的设置。旧记录保持关闭，旧客户端编辑定时任务时省略该字段会保留原值。定时任务执行时逐张读取持久化原图，日期绘制不改变提交进度或调度规则。
+
+有原图的记录可在重打时切换日期；已经生成 PDF 的记录保留页面上的日期，重打不重复叠加，也不能移除已绘制的日期。其他文档类型不应用该开关。日期与既有自定义文字水印可同时使用。
+
 ## 照片队列每次打印张数
 
 创建 multipart 增加 `photos_per_run`，编辑 JSON 使用 `photosPerRun`；范围 1–100，旧请求和旧任务默认 1。数据库新增 `photos_per_run INTEGER NOT NULL DEFAULT 1`。张数与 `copies` 独立：每次 3 张、每张 2 份，会依次提交 3 个打印任务，每个任务 2 份。

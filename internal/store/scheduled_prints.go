@@ -46,21 +46,22 @@ type ScheduledPrint struct {
 	Filename      string
 	StoredPath    string
 
-	IsDuplex       bool
-	IsColor        bool
-	Copies         int
-	Orientation    string
-	PaperSize      string
-	PaperType      string
-	MediaSource    string
-	PrintScaling   string
-	PageRange      string
-	PageSet        string
-	Mirror         bool
-	WatermarkText  string
-	NumberUp       int
-	NumberUpLayout string
-	PageBorder     string
+	IsDuplex           bool
+	IsColor            bool
+	Copies             int
+	Orientation        string
+	PaperSize          string
+	PaperType          string
+	MediaSource        string
+	PrintScaling       string
+	PageRange          string
+	PageSet            string
+	Mirror             bool
+	PhotoDateWatermark bool
+	WatermarkText      string
+	NumberUp           int
+	NumberUpLayout     string
+	PageBorder         string
 
 	ScheduleType    string
 	ScheduleTime    string
@@ -86,7 +87,7 @@ type ScheduledPrint struct {
 
 const scheduledPrintColumns = `s.id, s.user_id, u.username, s.name, s.printer_uri, s.filename, s.stored_path,
 	s.is_duplex, s.is_color, s.copies, s.orientation, s.paper_size, s.paper_type, s.media_source, s.print_scaling,
-	s.page_range, s.page_set, s.mirror, s.watermark_text, s.number_up, s.number_up_layout, s.page_border,
+	s.page_range, s.page_set, s.mirror, s.watermark_text, s.photo_date_watermark, s.number_up, s.number_up_layout, s.page_border,
 	s.schedule_type, s.schedule_time, s.schedule_weekday, s.schedule_day,
 	s.run_at, s.next_run_at, s.last_run_at, s.last_status, s.last_error, s.enabled,
 	s.created_at, s.updated_at, s.files_json, s.next_file_index, s.submitted_count, s.loop, s.start_date, s.history_json, s.driver_options_json, s.photos_per_run`
@@ -97,7 +98,7 @@ func scanScheduledPrint(sc scanner) (ScheduledPrint, error) {
 	err := sc.Scan(
 		&rec.ID, &rec.UserID, &rec.Username, &rec.Name, &rec.PrinterURI, &rec.Filename, &rec.StoredPath,
 		&rec.IsDuplex, &rec.IsColor, &rec.Copies, &rec.Orientation, &rec.PaperSize, &rec.PaperType, &rec.MediaSource, &rec.PrintScaling,
-		&rec.PageRange, &rec.PageSet, &rec.Mirror, &rec.WatermarkText, &rec.NumberUp, &rec.NumberUpLayout, &rec.PageBorder,
+		&rec.PageRange, &rec.PageSet, &rec.Mirror, &rec.WatermarkText, &rec.PhotoDateWatermark, &rec.NumberUp, &rec.NumberUpLayout, &rec.PageBorder,
 		&rec.ScheduleType, &rec.ScheduleTime, &rec.ScheduleWeekday, &rec.ScheduleDay,
 		&rec.RunAt, &rec.NextRunAt, &rec.LastRunAt, &rec.LastStatus, &rec.LastError, &rec.Enabled,
 		&rec.CreatedAt, &rec.UpdatedAt, &filesJSON, &rec.NextFileIndex, &rec.SubmittedCount, &rec.Loop, &rec.StartDate, &historyJSON, &driverJSON, &rec.PhotosPerRun,
@@ -134,14 +135,14 @@ func InsertScheduledPrint(ctx context.Context, tx *sql.Tx, rec *ScheduledPrint) 
 	res, err := tx.ExecContext(ctx, `INSERT INTO scheduled_prints (
 		user_id, name, printer_uri, filename, stored_path,
 		is_duplex, is_color, copies, orientation, paper_size, paper_type, media_source, print_scaling,
-		page_range, page_set, mirror, watermark_text, number_up, number_up_layout, page_border,
+		page_range, page_set, mirror, watermark_text, photo_date_watermark, number_up, number_up_layout, page_border,
 		schedule_type, schedule_time, schedule_weekday, schedule_day,
 		run_at, next_run_at, last_run_at, last_status, last_error, enabled,
 		created_at, updated_at, files_json, loop, start_date, driver_options_json, photos_per_run
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		rec.UserID, rec.Name, rec.PrinterURI, rec.Filename, rec.StoredPath,
 		rec.IsDuplex, rec.IsColor, rec.Copies, rec.Orientation, rec.PaperSize, rec.PaperType, rec.MediaSource, rec.PrintScaling,
-		rec.PageRange, rec.PageSet, rec.Mirror, rec.WatermarkText, rec.NumberUp, rec.NumberUpLayout, rec.PageBorder,
+		rec.PageRange, rec.PageSet, rec.Mirror, rec.WatermarkText, rec.PhotoDateWatermark, rec.NumberUp, rec.NumberUpLayout, rec.PageBorder,
 		rec.ScheduleType, rec.ScheduleTime, rec.ScheduleWeekday, rec.ScheduleDay,
 		rec.RunAt, rec.NextRunAt, rec.LastRunAt, rec.LastStatus, rec.LastError, rec.Enabled,
 		rec.CreatedAt, rec.UpdatedAt, string(filesJSON), rec.Loop, rec.StartDate, string(driverJSON), photosPerRun,
@@ -162,13 +163,13 @@ func UpdateScheduledPrint(ctx context.Context, tx *sql.Tx, rec *ScheduledPrint) 
 	_, err = tx.ExecContext(ctx, `UPDATE scheduled_prints SET
 		name = ?, printer_uri = ?,
 		is_duplex = ?, is_color = ?, copies = ?, orientation = ?, paper_size = ?, paper_type = ?, media_source = ?, print_scaling = ?,
-		page_range = ?, page_set = ?, mirror = ?, watermark_text = ?, number_up = ?, number_up_layout = ?, page_border = ?,
+		page_range = ?, page_set = ?, mirror = ?, watermark_text = ?, photo_date_watermark = ?, number_up = ?, number_up_layout = ?, page_border = ?,
 		schedule_type = ?, schedule_time = ?, schedule_weekday = ?, schedule_day = ?,
 		run_at = ?, next_run_at = ?, enabled = ?, updated_at = ?, loop = ?, start_date = ?, next_file_index = ?, driver_options_json = ?, photos_per_run = ?
 		WHERE id = ?`,
 		rec.Name, rec.PrinterURI,
 		rec.IsDuplex, rec.IsColor, rec.Copies, rec.Orientation, rec.PaperSize, rec.PaperType, rec.MediaSource, rec.PrintScaling,
-		rec.PageRange, rec.PageSet, rec.Mirror, rec.WatermarkText, rec.NumberUp, rec.NumberUpLayout, rec.PageBorder,
+		rec.PageRange, rec.PageSet, rec.Mirror, rec.WatermarkText, rec.PhotoDateWatermark, rec.NumberUp, rec.NumberUpLayout, rec.PageBorder,
 		rec.ScheduleType, rec.ScheduleTime, rec.ScheduleWeekday, rec.ScheduleDay,
 		rec.RunAt, rec.NextRunAt, rec.Enabled, rec.UpdatedAt, rec.Loop, rec.StartDate, rec.NextFileIndex, string(driverJSON), rec.PhotosPerRun,
 		rec.ID,
