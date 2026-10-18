@@ -255,6 +255,7 @@ func printHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	printScaling = photoPrintScaling(printPath, printScaling, printMime, orientation, paperSize)
 	if watermarkText != "" && printMime == "application/pdf" {
 		wmPath, wmCleanup, wmErr := applyWatermarkToPDF(printPath, watermarkText)
 		if wmErr != nil {

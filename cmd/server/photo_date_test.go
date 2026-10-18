@@ -336,6 +336,20 @@ func TestPhotoDatePrintingPipelines(t *testing.T) {
 				return
 			}
 			want := expected[submissions]
+			wantScaling := "none"
+			if submissions == 3 || submissions == 4 {
+				// This existing PDF was generated with the default fit layout.
+				wantScaling = "fill"
+			}
+			gotScaling := ""
+			for _, attr := range message.Job {
+				if attr.Name == "print-scaling" {
+					gotScaling = attr.Values[0].V.String()
+				}
+			}
+			if gotScaling != wantScaling {
+				t.Errorf("submission %d scaling=%q, want %q", submissions, gotScaling, wantScaling)
+			}
 			if want == "" {
 				if text != "" {
 					t.Errorf("disabled date: %q", text)
@@ -418,6 +432,7 @@ func TestPhotoDatePrintingPipelines(t *testing.T) {
 	reprint(baked, true)
 	task := insertScheduledTestTask(t, s, user)
 	task.PrinterURI, task.PhotoDateWatermark, task.PhotosPerRun = printer, true, 2
+	task.PrintScaling = "fill"
 	task.Files = []store.ScheduledFile{{Filename: "one.jpg", StoredPath: "one.jpg"}, {Filename: "two.jpg", StoredPath: "two.jpg"}}
 	if err := os.WriteFile(filepath.Join(uploadDir, "one.jpg"), photo, 0600); err != nil {
 		t.Fatal(err)

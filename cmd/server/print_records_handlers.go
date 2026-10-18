@@ -463,6 +463,7 @@ func reprintHandler(w http.ResponseWriter, r *http.Request) {
 		defer printCleanup()
 	}
 
+	printScaling := photoPrintScaling(printPath, req.PrintScaling, printMime, req.Orientation, req.PaperSize)
 	if watermark := strings.TrimSpace(req.WatermarkText); watermark != "" && printMime == "application/pdf" {
 		wmPath, wmCleanup, wmErr := applyWatermarkToPDF(printPath, watermark)
 		if wmErr != nil {
@@ -474,7 +475,7 @@ func reprintHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 重打同样要走自定义百分比缩放：记录里存的是用户原始选择（自定义时为纯数字）。
-	scaledPath, scaleCleanup, printScaling := resolveCustomScaling(printPath, req.PrintScaling, printMime, "reprint")
+	scaledPath, scaleCleanup, printScaling := resolveCustomScaling(printPath, printScaling, printMime, "reprint")
 	printPath = scaledPath
 	if scaleCleanup != nil {
 		defer scaleCleanup()

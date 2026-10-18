@@ -357,20 +357,9 @@ func convertImageToPDF(inputPath string, orientation string, paperSize string, i
 	if layout.Borderless {
 		marginMM = 0
 	}
-	orientCode := getOrientationCode(orientation)
-	paperName, customSize := paperSizeToGofpdf(paperSize)
-
-	var pdf *gofpdf.Fpdf
-	if paperName != "" {
-		// 使用标准纸张
-		pdf = gofpdf.New(orientCode, "mm", paperName, "")
-	} else {
-		// 使用自定义尺寸
-		pdf = gofpdf.NewCustom(&gofpdf.InitType{
-			UnitStr:        "mm",
-			Size:           customSize,
-			OrientationStr: orientCode,
-		})
+	pdf := newPhotoPDF(orientation, paperSize)
+	if layout.PrintScaling == "fill" {
+		pdf.SetKeywords(photoFillLayoutKeyword, false)
 	}
 
 	pdf.SetMargins(marginMM, marginMM, marginMM)
@@ -554,18 +543,9 @@ func convertImagesMultiToPDF(fileHeaders []*multipart.FileHeader, orientation st
 	if layout.Borderless {
 		marginMM = 0
 	}
-	orientCode := getOrientationCode(orientation)
-	paperName, customSize := paperSizeToGofpdf(paperSize)
-
-	var pdf *gofpdf.Fpdf
-	if paperName != "" {
-		pdf = gofpdf.New(orientCode, "mm", paperName, "")
-	} else {
-		pdf = gofpdf.NewCustom(&gofpdf.InitType{
-			UnitStr:        "mm",
-			Size:           customSize,
-			OrientationStr: orientCode,
-		})
+	pdf := newPhotoPDF(orientation, paperSize)
+	if layout.PrintScaling == "fill" {
+		pdf.SetKeywords(photoFillLayoutKeyword, false)
 	}
 	pdf.SetMargins(marginMM, marginMM, marginMM)
 	pdf.SetAutoPageBreak(false, marginMM)

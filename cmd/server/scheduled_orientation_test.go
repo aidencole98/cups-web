@@ -51,6 +51,7 @@ func TestScheduledPhotoOrientationPipeline(t *testing.T) {
 			s, user := scheduledTestStore(t)
 			task := insertScheduledTestTask(t, s, user)
 			task.Orientation, task.PhotosPerRun = tc.orientation, 3
+			task.PrintScaling = "fill"
 			uploads := t.TempDir()
 			if err := os.MkdirAll(filepath.Join(uploads, "scheduled"), 0755); err != nil {
 				t.Fatal(err)
@@ -124,11 +125,17 @@ func TestScheduledPhotoOrientationPipeline(t *testing.T) {
 				}
 				direction := wantDirections[submissions]
 				submissions++
-				var orientation string
+				var orientation, scaling string
 				for _, attr := range request.Job {
 					if attr.Name == "orientation-requested" {
 						orientation = attr.Values[0].V.String()
 					}
+					if attr.Name == "print-scaling" {
+						scaling = attr.Values[0].V.String()
+					}
+				}
+				if scaling != "none" {
+					t.Errorf("completed %s photo layout must not be filled again: %q", direction, scaling)
 				}
 				// Preserve the existing IPP convention: landscape=4, portrait omitted.
 				wantIPP := ""

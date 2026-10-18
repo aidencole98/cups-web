@@ -189,11 +189,11 @@ func TestPhotoFillPrintReprintAndSchedule(t *testing.T) {
 			found := false
 			for _, attr := range request.Job {
 				if attr.Name == "print-scaling" {
-					found = attr.Values[0].V.String() == "fill"
+					found = attr.Values[0].V.String() == "none"
 				}
 			}
 			if !found {
-				t.Error("lost IPP scaling choice")
+				t.Error("completed photo layout must not be filled a second time")
 			}
 		}
 		response := goipp.NewResponse(goipp.DefaultVersion, goipp.StatusOk, request.RequestID)

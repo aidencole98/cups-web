@@ -123,6 +123,7 @@ func executeScheduled(s *store.Store, uploads string, task store.ScheduledPrint)
 	defer cancel()
 
 	printPath := absPath
+	layoutPaperSize := task.PaperSize
 	var printCleanup func()
 	printMime := ""
 	var pages int
@@ -171,6 +172,7 @@ func executeScheduled(s *store.Store, uploads string, task store.ScheduledPrint)
 				imagePaperSize = fmt.Sprintf("custom:%.4fx%.4f", h, w)
 			}
 		}
+		layoutPaperSize = imagePaperSize
 		outPath, cleanup, err := convertImageToPDF(absPath, task.Orientation, imagePaperSize, false, false, imagePDFOptions{
 			PhotoDateWatermark: task.PhotoDateWatermark,
 			Borderless:         task.DriverOptions.PageSize != nil && task.DriverOptions.PageSize.Borderless, PrintScaling: task.PrintScaling,
@@ -209,6 +211,7 @@ func executeScheduled(s *store.Store, uploads string, task store.ScheduledPrint)
 		defer printCleanup()
 	}
 
+	printScaling := photoPrintScaling(printPath, task.PrintScaling, printMime, task.Orientation, layoutPaperSize)
 	if watermark := strings.TrimSpace(task.WatermarkText); watermark != "" && printMime == "application/pdf" {
 		wmPath, wmCleanup, wmErr := applyWatermarkToPDF(printPath, watermark)
 		if wmErr != nil {
@@ -219,7 +222,7 @@ func executeScheduled(s *store.Store, uploads string, task store.ScheduledPrint)
 		}
 	}
 
-	scaledPath, scaleCleanup, effectiveScaling := resolveCustomScaling(printPath, task.PrintScaling, printMime, "scheduler")
+	scaledPath, scaleCleanup, effectiveScaling := resolveCustomScaling(printPath, printScaling, printMime, "scheduler")
 	printPath = scaledPath
 	if scaleCleanup != nil {
 		defer scaleCleanup()
