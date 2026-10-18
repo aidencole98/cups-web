@@ -7,7 +7,7 @@ import (
 	"image/color"
 	_ "image/gif"
 	"image/jpeg"
-	_ "image/png"
+	"image/png"
 	"io"
 	"log"
 	"math"
@@ -25,9 +25,8 @@ import (
 
 const pdfPageMarginMM = 10.0
 
-// 大图下采样阈值：长边超过 imageDownscaleMaxEdge 时，会先缩放到该值再交给 gofpdf 嵌入，
-// 避免把原始 10+MB 的手机照片整张塞进 PDF —— 移动端下载/预览链路会因此失败或超时（Issue #22）。
-// 打印场景 3000px + JPEG Q85 对 A4/A3 来说分辨率已远超 300dpi，画质损失可忽略。
+// 显式图片压缩和证件拼版使用的尺寸/编码策略。
+// 普通照片关闭压缩时不使用该尺寸上限；3000px 不代表 A4/A3 的 300ppi。
 const (
 	imageDownscaleMaxEdge = 3000
 	imageDownscaleJPEGQ   = 85
@@ -124,11 +123,8 @@ func downscaleImageIfNeeded(inputPath string, tmpDir string) (string, image.Conf
 	return outPath, newCfg, nil
 }
 
-// applyImageTransforms 对图片做正交旋转(quarters 个 90°，1=顺时针 90°)与反色(invert)。
-// 仅当需要旋转或反色时才解码并重新编码为 JPEG(有损)；无需变换时原样返回原路径，只读尺寸。
-// 返回变换后的路径与最终尺寸（90°/270° 旋转后宽高互换）。
-// 与 downscaleImageIfNeeded 串联：先下采样，再变换，保证大图也不会把原图整张塞进 PDF。
-// 旋转用正交像素搬移（无插值、无损），反色直接对 RGBA 通道做 255-c（alpha 不变）。
+// applyImageTransforms 使用无损 PNG 保存显式像素变换，无变换时返回原文件。
+// 照片排版的旋转由 PDF 矩阵承担，此处只为反色处理像素，不损失 JPEG 编码质量。
 func applyImageTransforms(inputPath string, tmpDir string, quarters int, invert bool) (string, image.Config, error) {
 	quarters = ((quarters % 4) + 4) % 4
 	if quarters == 0 && !invert {
@@ -164,12 +160,12 @@ func applyImageTransforms(inputPath string, tmpDir string, quarters int, invert 
 
 	ob := out.Bounds()
 	seq := atomic.AddUint64(&downscaleSeq, 1)
-	outPath := filepath.Join(tmpDir, "xform_"+itoa(int(seq))+".jpg")
+	outPath := filepath.Join(tmpDir, "xform_"+itoa(int(seq))+".png")
 	outFile, err := os.Create(outPath)
 	if err != nil {
 		return "", image.Config{}, err
 	}
-	if err := jpeg.Encode(outFile, out, &jpeg.Options{Quality: imageDownscaleJPEGQ}); err != nil {
+	if err := png.Encode(outFile, out); err != nil {
 		_ = outFile.Close()
 		_ = os.Remove(outPath)
 		return "", image.Config{}, err
@@ -291,10 +287,17 @@ type imagePDFOptions struct {
 // drawPDFImage shares the same photo layout for a whole page and a grid cell.
 // fill enlarges without stretching, then clips at the content area's edges.
 // Other scaling modes retain the existing fit layout before CUPS processing.
-func drawPDFImage(pdf *gofpdf.Fpdf, path string, cfg image.Config, x, y, width, height float64, scaling string, date string) {
+func drawPDFImage(pdf *gofpdf.Fpdf, path string, cfg image.Config, x, y, width, height float64, scaling string, date string, rotations ...int) {
 	if width <= 0 || height <= 0 || cfg.Width <= 0 || cfg.Height <= 0 {
 		pdf.SetErrorf("invalid image content area")
 		return
+	}
+	rotation := 0
+	if len(rotations) > 0 {
+		rotation = rotations[0]
+	}
+	if rotation == 90 || rotation == 270 {
+		cfg.Width, cfg.Height = cfg.Height, cfg.Width
 	}
 	scale := math.Min(width/float64(cfg.Width), height/float64(cfg.Height))
 	if scaling == "fill" {
@@ -306,7 +309,19 @@ func drawPDFImage(pdf *gofpdf.Fpdf, path string, cfg image.Config, x, y, width, 
 	// treats a negative x as the current cursor position, breaking centering.
 	opts := gofpdf.ImageOptions{ReadDpi: true, AllowNegativePosition: true}
 	ix, iy := x+(width-w)/2, y+(height-h)/2
-	pdf.ImageOptions(path, ix, iy, w, h, false, opts, 0, "")
+	if rotation == 0 {
+		pdf.ImageOptions(path, ix, iy, w, h, false, opts, 0, "")
+	} else {
+		iw, ih := w, h
+		if rotation == 90 || rotation == 270 {
+			iw, ih = h, w
+		}
+		cx, cy := ix+w/2, iy+h/2
+		pdf.TransformBegin()
+		pdf.TransformRotate(-float64(rotation), cx, cy)
+		pdf.ImageOptions(path, cx-iw/2, cy-ih/2, iw, ih, false, opts, 0, "")
+		pdf.TransformEnd()
+	}
 	if scaling == "fill" {
 		pdf.ClipEnd()
 	}
@@ -318,65 +333,7 @@ func drawPDFImage(pdf *gofpdf.Fpdf, path string, cfg image.Config, x, y, width, 
 }
 
 func convertImageToPDF(inputPath string, orientation string, paperSize string, invert bool, compress bool, options ...imagePDFOptions) (string, func(), error) {
-	var layout imagePDFOptions
-	if len(options) > 0 {
-		layout = options[0]
-	}
-	tmpDir, err := os.MkdirTemp("", "convert-img-")
-	if err != nil {
-		return "", nil, err
-	}
-	cleanup := func() { _ = os.RemoveAll(tmpDir) }
-
-	date := resolvedPhotoDate(inputPath, layout.PhotoDateWatermark, layout.PhotoDates, 0)
-
-	// 大图先下采样再嵌入，避免 PDF 体积过大导致移动端预览/下载失败（Issue #22）。
-	imgPath, cfg, err := downscaleImageIfNeeded(inputPath, tmpDir)
-	if err != nil {
-		cleanup()
-		return "", nil, err
-	}
-
-	// 黑白反转（issue #87）：对图片做反色后嵌入。无需变换时原样返回，不产生二次编码。
-	imgPath, cfg, err = applyImageTransforms(imgPath, tmpDir, 0, invert)
-	if err != nil {
-		cleanup()
-		return "", nil, err
-	}
-
-	if compress {
-		imgPath, cfg, err = compressImageIfNeeded(imgPath, tmpDir)
-		if err != nil {
-			cleanup()
-			return "", nil, err
-		}
-	}
-
-	// 处理方向和纸张大小
-	marginMM := pdfPageMarginMM
-	if layout.Borderless {
-		marginMM = 0
-	}
-	pdf := newPhotoPDF(orientation, paperSize)
-	if layout.PrintScaling == "fill" {
-		pdf.SetKeywords(photoFillLayoutKeyword, false)
-	}
-
-	pdf.SetMargins(marginMM, marginMM, marginMM)
-	pdf.SetAutoPageBreak(false, marginMM)
-	pdf.AddPage()
-
-	pageW, pageH := pdf.GetPageSize()
-	maxW := pageW - 2*marginMM
-	maxH := pageH - 2*marginMM
-	drawPDFImage(pdf, imgPath, cfg, marginMM, marginMM, maxW, maxH, layout.PrintScaling, date)
-
-	outPath := filepath.Join(tmpDir, "image.pdf")
-	if err := pdf.OutputFileAndClose(outPath); err != nil {
-		cleanup()
-		return "", nil, err
-	}
-	return outPath, cleanup, nil
+	return convertImagePathsToPDF([]string{inputPath}, orientation, paperSize, nil, invert, 1, compress, options...)
 }
 
 func convertTextToPDF(inputPath string, orientation string, paperSize string) (string, func(), error) {
@@ -463,67 +420,65 @@ func convertTextToPDF(inputPath string, orientation string, paperSize string) (s
 // 非法或 <=1 的 perPage 一律按 1 处理。
 // 调用方负责在使用完输出 PDF 后调用返回的 cleanup 清理临时目录。
 func convertImagesMultiToPDF(fileHeaders []*multipart.FileHeader, orientation string, paperSize string, rotations []int, invert bool, perPage int, compress bool, options ...imagePDFOptions) (string, func(), error) {
+	if len(fileHeaders) == 0 {
+		return "", nil, errors.New("no image files provided")
+	}
+	tmpDir, err := os.MkdirTemp("", "photo-inputs-")
+	if err != nil {
+		return "", nil, err
+	}
+	defer os.RemoveAll(tmpDir)
+	paths := make([]string, 0, len(fileHeaders))
+	for idx, fh := range fileHeaders {
+		src, err := fh.Open()
+		if err != nil {
+			return "", nil, err
+		}
+		ext := strings.ToLower(filepath.Ext(fh.Filename))
+		path := filepath.Join(tmpDir, "img_"+itoa(idx)+ext)
+		dst, err := os.Create(path)
+		if err != nil {
+			src.Close()
+			return "", nil, err
+		}
+		_, copyErr := io.Copy(dst, src)
+		closeErr := dst.Close()
+		src.Close()
+		if copyErr != nil {
+			return "", nil, copyErr
+		}
+		if closeErr != nil {
+			return "", nil, closeErr
+		}
+		paths = append(paths, path)
+	}
+	return convertImagePathsToPDF(paths, orientation, paperSize, rotations, invert, perPage, compress, options...)
+}
+
+// Both preview and printing use original paths and the same photo layout.
+func convertImagePathsToPDF(paths []string, orientation, paperSize string, rotations []int, invert bool, perPage int, compress bool, options ...imagePDFOptions) (string, func(), error) {
 	var layout imagePDFOptions
 	if len(options) > 0 {
 		layout = options[0]
 	}
-	if len(fileHeaders) == 0 {
+	if len(paths) == 0 {
 		return "", nil, errors.New("no image files provided")
 	}
-
 	tmpDir, err := os.MkdirTemp("", "convert-imgs-")
 	if err != nil {
 		return "", nil, err
 	}
 	cleanup := func() { _ = os.RemoveAll(tmpDir) }
-
-	// 先把所有上传流落到临时文件，便于 gofpdf 直接读取路径
 	type savedImage struct {
-		date string
-		path string
-		cfg  image.Config
+		date, path string
+		cfg        image.Config
+		rotation   int
 	}
-	saved := make([]savedImage, 0, len(fileHeaders))
-	for idx, fh := range fileHeaders {
-		src, err := fh.Open()
-		if err != nil {
-			cleanup()
-			return "", nil, err
-		}
-		ext := strings.ToLower(filepath.Ext(fh.Filename))
-		if ext == "" {
-			ext = ".img"
-		}
-		imgPath := filepath.Join(tmpDir, "img_"+itoa(idx)+ext)
-		dst, err := os.Create(imgPath)
-		if err != nil {
-			src.Close()
-			cleanup()
-			return "", nil, err
-		}
-		if _, err := io.Copy(dst, src); err != nil {
-			dst.Close()
-			src.Close()
-			cleanup()
-			return "", nil, err
-		}
-		dst.Close()
-		src.Close()
-
-		date := resolvedPhotoDate(imgPath, layout.PhotoDateWatermark, layout.PhotoDates, idx)
-
-		// 大图下采样：移动端合并若干张 10M+ 原图时最容易卡在这一步
-		finalPath, cfg, err := downscaleImageIfNeeded(imgPath, tmpDir)
-		if err != nil {
-			cleanup()
-			return "", nil, err
-		}
-		// 逐图旋转 + 黑白反转（issue #87）：rotations[idx] 为度数（0/90/180/270），转 quarters 传入。
-		rot := 0
-		if idx < len(rotations) {
-			rot = rotations[idx]
-		}
-		finalPath, cfg, err = applyImageTransforms(finalPath, tmpDir, rot/90, invert)
+	saved := make([]savedImage, 0, len(paths))
+	for idx, path := range paths {
+		date := resolvedPhotoDate(path, layout.PhotoDateWatermark, layout.PhotoDates, idx)
+		// Inversion uses a lossless intermediate. Rotation stays in the PDF matrix.
+		finalPath, cfg, err := applyImageTransforms(path, tmpDir, 0, invert)
 		if err != nil {
 			cleanup()
 			return "", nil, err
@@ -535,7 +490,11 @@ func convertImagesMultiToPDF(fileHeaders []*multipart.FileHeader, orientation st
 				return "", nil, err
 			}
 		}
-		saved = append(saved, savedImage{path: finalPath, cfg: cfg, date: date})
+		rotation := 0
+		if idx < len(rotations) {
+			rotation = ((rotations[idx] % 360) + 360) % 360
+		}
+		saved = append(saved, savedImage{path: finalPath, cfg: cfg, date: date, rotation: rotation})
 	}
 
 	// 构造 PDF
@@ -557,7 +516,7 @@ func convertImagesMultiToPDF(fileHeaders []*multipart.FileHeader, orientation st
 	const gapMM = 4.0
 
 	drawImage := func(img savedImage, slotX, slotY, slotW, slotH float64) {
-		drawPDFImage(pdf, img.path, img.cfg, slotX, slotY, slotW, slotH, layout.PrintScaling, img.date)
+		drawPDFImage(pdf, img.path, img.cfg, slotX, slotY, slotW, slotH, layout.PrintScaling, img.date, img.rotation)
 	}
 
 	for i, img := range saved {

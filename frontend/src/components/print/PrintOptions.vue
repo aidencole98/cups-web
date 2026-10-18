@@ -32,7 +32,7 @@
       </UFormField>
 
       <UFormField v-if="imageCompressionVisible" label="图片压缩">
-        <UCheckbox :model-value="compressImages" :disabled="imageCompressionDisabled" label="启用图片压缩" description="每张图片压至 800KB 以下，可能降低清晰度；适合内存较小的打印机。" @update:model-value="$emit('update:compressImages', $event)" />
+        <UCheckbox :model-value="compressImages" :disabled="imageCompressionDisabled" label="启用图片压缩" description="关闭时保留原始像素；开启后每张图片压至 800KB 以下，可能降低清晰度。" @update:model-value="$emit('update:compressImages', $event)" />
       </UFormField>
 
       <!-- 双面 + 份数 -->

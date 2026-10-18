@@ -54,6 +54,10 @@
               <div><span class="font-medium">页数：</span>{{ rec.pages }}</div>
               <div v-if="rec.jobId"><span class="font-medium">任务ID：</span>{{ rec.jobId }}</div>
             </div>
+            <div class="mt-2 flex flex-wrap gap-2" @click.stop>
+              <a v-if="rec.hasRenderedPDF" :href="`/api/print-records/${rec.id}/file?variant=rendered`" class="text-xs text-primary">下载打印 PDF</a>
+              <a v-for="(source, index) in (rec.photoSources || [])" :key="index" :href="`/api/print-records/${rec.id}/file?source=${index}`" class="text-xs text-primary">原图：{{ source.filename }}</a>
+            </div>
             <div class="mt-2 flex justify-end">
               <UButton
                 size="xs"
@@ -101,8 +105,12 @@
               v-model:pageRange="reprintForm.pageRange"
               v-model:pageSet="reprintForm.pageSet"
               v-model:mirror="reprintForm.mirror"
+              v-model:compressImages="reprintForm.compressImages"
+              :image-compression-visible="!!reprintRecord?.photoSources?.length"
+              v-model:invert="reprintForm.invert"
+              :invert-visible="!!reprintRecord?.photoSources?.length && !reprintForm.isColor"
               v-model:photoDateWatermark="reprintForm.photoDateWatermark"
-              :photo-date-visible="/\.(jpe?g|png|gif)$/i.test(reprintRecord?.filename || '')"
+              :photo-date-visible="!!reprintRecord?.photoSources?.length || /\.(jpe?g|png|gif)$/i.test(reprintRecord?.filename || '')"
               v-model:watermarkText="reprintForm.watermarkText"
               v-model:numberUp="reprintForm.numberUp"
               v-model:numberUpLayout="reprintForm.numberUpLayout"
@@ -120,7 +128,7 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { formatTime, formatPrinterName, printerLabel, printerDescription, statusColor, statusText } from '../../utils/format'
 import PrintOptions from './PrintOptions.vue'
 
@@ -160,6 +168,9 @@ function defaultReprintForm() {
     pageSet: 'all',
     mirror: false,
     photoDateWatermark: false,
+    compressImages: false,
+    invert: false,
+    imagesPerPage: 1,
     watermarkText: '',
     numberUp: 1,
     numberUpLayout: 'lrtb',
@@ -167,6 +178,7 @@ function defaultReprintForm() {
   }
 }
 const reprintForm = ref(defaultReprintForm())
+watch(() => reprintForm.value.isColor, value => { if (value) reprintForm.value.invert = false })
 
 const printerSelectItems = computed(() =>
   props.printers.map(p => ({
@@ -213,6 +225,7 @@ function openReprintDialog(rec) {
     pageSet: rec.pageSet ?? def.pageSet,
     mirror: rec.mirror ?? def.mirror,
     photoDateWatermark: !!rec.photoDateWatermark,
+    compressImages: !!rec.compressImages, invert: !!rec.invert, imagesPerPage: rec.imagesPerPage || 1,
     watermarkText: rec.watermarkText ?? def.watermarkText,
     numberUp: rec.numberUp ?? def.numberUp,
     numberUpLayout: rec.numberUpLayout ?? def.numberUpLayout,
@@ -250,6 +263,7 @@ function submitReprint() {
     pageSet: f.pageSet,
     mirror: f.mirror,
     photoDateWatermark: f.photoDateWatermark,
+    compressImages: f.compressImages, invert: f.invert, imagesPerPage: f.imagesPerPage,
     watermarkText: f.watermarkText.trim(),
     numberUp: f.numberUp,
     numberUpLayout: f.numberUpLayout,

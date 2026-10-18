@@ -30,7 +30,7 @@ func printHandler(w http.ResponseWriter, r *http.Request) {
 	maxPages, _ := getPrintLimits(r.Context())
 	applyUploadLimit(w, r)
 	// Expect multipart form
-	if err := r.ParseMultipartForm(512 << 20); err != nil {
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		if isMaxBytesError(err) {
 			writeJSONError(w, http.StatusRequestEntityTooLarge, "文件超出管理员设置的大小上限")
 			return
@@ -38,12 +38,28 @@ func printHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid multipart form")
 		return
 	}
-	file, fh, err := r.FormFile("file")
+	defer r.MultipartForm.RemoveAll()
+	headers := r.MultipartForm.File["file"]
+	multiInput := len(r.MultipartForm.File["files"]) > 0
+	if multiInput {
+		if len(headers) > 0 {
+			writeJSONError(w, 400, "file 和 files 不能混用")
+			return
+		}
+		headers = r.MultipartForm.File["files"]
+	}
+	if len(headers) < 1 || len(headers) > 100 || (!multiInput && len(headers) != 1) {
+		writeJSONError(w, 400, "文件数量无效")
+		return
+	}
+	fh := headers[0]
+	file, err := fh.Open()
 	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, "missing file field")
+		writeJSONError(w, 400, "failed to open file")
 		return
 	}
 	defer file.Close()
+	displayFilename := fh.Filename
 
 	printer := r.FormValue("printer")
 	if printer == "" {
@@ -53,10 +69,7 @@ func printHandler(w http.ResponseWriter, r *http.Request) {
 
 	isDuplex := r.FormValue("duplex") == "true"
 	isColor := r.FormValue("color") == "true"
-	// 黑白反转（issue #87）：仅图片转 PDF 生效，不落库（reprint 不保留）
-	invert := r.FormValue("invert") == "true"
 	photoDateWatermark := r.FormValue("photo_date_watermark") == "true"
-	compress := r.FormValue("compress_images") == "true"
 
 	// Extended print options
 	copiesStr := r.FormValue("copies")
@@ -114,6 +127,15 @@ func printHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var photoLayout store.PhotoLayout
+	var renderedRel string
+	pendingPaths := []string{storedRel, convertedRelPath(storedRel)}
+	keepAssets := false
+	defer func() {
+		if !keepAssets {
+			removePrintAssets(uploadDir, pendingPaths)
+		}
+	}()
 	countCtx, cancel := convertTimeoutContext(r.Context())
 	defer cancel()
 	printPath := storedAbs
@@ -121,6 +143,11 @@ func printHandler(w http.ResponseWriter, r *http.Request) {
 	printMime := ""
 	var pages int
 	kind := detectFileKind(storedAbs, fh.Filename)
+	if multiInput && kind != fileKindImage {
+		writeJSONError(w, 400, "files 仅支持照片")
+		return
+	}
+
 	switch kind {
 	case fileKindPDF:
 		// 默认不再对上传 PDF 走 gs 规范化，直接打印原始字节。
@@ -187,26 +214,58 @@ func printHandler(w http.ResponseWriter, r *http.Request) {
 		printCleanup = cleanup
 		printMime = "application/pdf"
 	case fileKindImage:
-		outPath, cleanup, err := convertImageToPDF(storedAbs, orientation, paperSize, invert, compress, imagePDFOptions{
+		photoLayout, err = photoLayoutFromForm(r, headers)
+		if err != nil {
+			writeJSONError(w, 400, err.Error())
+			return
+		}
+		photoLayout.Sources[0].StoredPath = storedRel
+		for i, header := range headers[1:] {
+			src, openErr := header.Open()
+			if openErr != nil {
+				writeJSONError(w, 400, openErr.Error())
+				return
+			}
+			rel, _, saveErr := saveUploadedFile(src, header.Filename, uploadDir)
+			src.Close()
+			if saveErr != nil {
+				writeJSONError(w, 500, "failed to save photo")
+				return
+			}
+			pendingPaths = append(pendingPaths, rel)
+			photoLayout.Sources[i+1].StoredPath = rel
+		}
+		outPath, cleanup, convertErr := renderPhotoSources(uploadDir, photoLayout, orientation, paperSize, imagePDFOptions{
 			PhotoDateWatermark: photoDateWatermark,
 			Borderless:         driverOpts.PageSize != nil && driverOpts.PageSize.Borderless, PrintScaling: printScaling,
 		})
-		if err != nil {
-			_ = os.Remove(storedAbs)
-			writeJSONError(w, http.StatusBadRequest, "conversion failed")
+		if convertErr != nil {
+			writeJSONError(w, 400, "conversion failed: "+convertErr.Error())
 			return
 		}
-		_, convertedAbs, err := saveConvertedPDFToUploads(outPath, storedRel, uploadDir)
+		convertedRel, convertedAbs, saveErr := saveConvertedPDFToUploads(outPath, storedRel, uploadDir)
+		if saveErr != nil {
+			cleanup()
+			writeJSONError(w, 500, "failed to save converted file")
+			return
+		}
+		printPath, printCleanup, printMime = convertedAbs, cleanup, "application/pdf"
+		pages, err = countPDFPages(outPath)
 		if err != nil {
 			cleanup()
-			_ = os.Remove(storedAbs)
-			writeJSONError(w, http.StatusInternalServerError, "failed to save converted file")
+			writeJSONError(w, 400, "failed to read photo pages")
 			return
 		}
-		printPath = convertedAbs
-		printCleanup = cleanup
-		printMime = "application/pdf"
-		pages = 1
+		if len(headers) > 1 {
+			storedRel, storedAbs = convertedRel, convertedAbs
+			displayFilename = strings.TrimSpace(r.FormValue("name"))
+			if displayFilename == "" {
+				displayFilename = "合并照片.pdf"
+			}
+			if !strings.HasSuffix(strings.ToLower(displayFilename), ".pdf") {
+				displayFilename += ".pdf"
+			}
+		}
 	case fileKindText:
 		var err error
 		pages, err = estimateTextPages(storedAbs)
@@ -298,6 +357,14 @@ func printHandler(w http.ResponseWriter, r *http.Request) {
 		isDuplex = false
 	}
 
+	if saveHistory && len(photoLayout.Sources) > 0 {
+		renderedRel, err = saveRenderedPDF(printPath, storedRel, uploadDir)
+		if err != nil {
+			writeJSONError(w, 500, "failed to save print PDF")
+			return
+		}
+		pendingPaths = append(pendingPaths, renderedRel)
+	}
 	sess, _ := auth.GetSession(r)
 	var recordID int64
 
@@ -309,9 +376,10 @@ func printHandler(w http.ResponseWriter, r *http.Request) {
 			}
 
 			rec := store.PrintRecord{
-				UserID:     user.ID,
-				PrinterURI: printer,
-				Filename:   fh.Filename,
+				UserID:      user.ID,
+				PrinterURI:  printer,
+				Filename:    displayFilename,
+				PhotoLayout: photoLayout, RenderedPath: renderedRel,
 				StoredPath: storedRel,
 				Pages:      pages,
 				Status:     "queued",
@@ -350,6 +418,9 @@ func printHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if saveHistory && recordID > 0 {
+		keepAssets = true
+	}
 	f, err := os.Open(printPath)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "failed to open file")
@@ -391,7 +462,7 @@ func printHandler(w http.ResponseWriter, r *http.Request) {
 		PageBorder:     pageBorder,
 	}
 
-	job, err := ipp.SendPrintJob(printer, f, mime, sess.Username, fh.Filename, printOpts)
+	job, err := ipp.SendPrintJob(printer, f, mime, sess.Username, displayFilename, printOpts)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "print error: "+err.Error())
 		return

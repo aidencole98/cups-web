@@ -251,7 +251,7 @@
           v-model:invert="invert"
           :invert-visible="isInvertible"
           v-model:compressImages="compressImages"
-          :image-compression-visible="printMode === 'standard' && (isImageKind || batchFiles.some(f => f.type.startsWith('image/')))"
+          :image-compression-visible="printMode === 'standard' && (isImageKind || batchFiles.some(isPhotoFile))"
           :image-compression-disabled="converting || printing || batchPrinting"
           v-model:duplex="duplex"
           v-model:copies="copies"
@@ -265,7 +265,7 @@
           v-model:pageSet="pageSet"
           v-model:mirror="mirror"
           v-model:photoDateWatermark="photoDateWatermark"
-          :photo-date-visible="printMode === 'standard' && (isImageKind || batchFiles.some(f => f.type.startsWith('image/')))"
+          :photo-date-visible="printMode === 'standard' && (isImageKind || batchFiles.some(isPhotoFile))"
           :photo-date-disabled="converting || printing || batchPrinting"
           v-model:watermarkText="watermarkText"
           v-model:numberUp="numberUp"
@@ -401,8 +401,7 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { apiFetch, readError } from '../utils/api'
 import { isOfficeFile, isOFDFile } from '../utils/file'
-import { readPhotoDate } from '../utils/photo-date'
-import { downscaleImageIfNeeded } from '../utils/image'
+import { appendPhotoUploads, isPhotoFile } from '../utils/photo-upload'
 import FileUpload from '../components/print/FileUpload.vue'
 import IdCardUpload from '../components/print/IdCardUpload.vue'
 import PrintPreview from '../components/print/PrintPreview.vue'
@@ -603,7 +602,7 @@ const multiImageTotalSize = computed(() => selectedImages.value.reduce((sum, f) 
 // 当前是否为图片场景（单图图片或多图合一），决定「黑白反转」是否可用
 const isImageKind = computed(() =>
   isMultiImage.value ||
-  (selectedFile.value && selectedFile.value.type && selectedFile.value.type.startsWith('image/'))
+  isPhotoFile(selectedFile.value)
 )
 const isTextKind = computed(() => selectedFile.value && (selectedFile.value.type.startsWith('text/') || /\.(txt|md|html)$/i.test(selectedFile.value.name)))
 // 黑白反转仅对图片转 PDF 且黑白模式有效
@@ -684,8 +683,14 @@ const orientationLabel = computed(() => {
   return item?.label || (orientation.value === 'portrait' ? '纵向' : '横向')
 })
 
-const paperDimText = computed(() => {
+const previewPaperDimensions = computed(() => {
   const dim = paperDimensions(paperSize.value)
+  // Photo direction is applied to portrait dimensions, including driver sizes.
+  if (dim && isImageKind.value && dim.width > dim.height) return { width: dim.height, height: dim.width }
+  return dim
+})
+const paperDimText = computed(() => {
+  const dim = previewPaperDimensions.value
   if (!dim) return ''
   if (orientation.value === 'landscape') {
     return `${dim.height}×${dim.width}mm`
@@ -707,7 +712,7 @@ const printScalingParam = computed(() => {
 })
 
 const paperPreviewStyle = computed(() => {
-  const dim = paperDimensions(paperSize.value)
+  const dim = previewPaperDimensions.value
   if (!dim) return {}
   const isLandscape = orientation.value === 'landscape'
   const width = isLandscape ? dim.height : dim.width
@@ -764,7 +769,7 @@ function processFile(f) {
     textPreview.value = ''
     pdfBlob.value = f
     converted.value = true
-  } else if (f.type.startsWith('image/') || /\.(heic|heif)$/i.test(f.name)) {
+  } else if (isPhotoFile(f)) {
     if (isHeicImage(f)) {
       // HEIC/HEIF 浏览器无法原生解码，先提示"正在转换"，异步用 heic2any 转成 JPEG 再预览
       previewType.value = 'text'
@@ -968,15 +973,10 @@ async function uploadAndPrintBatch() {
 
     try {
       let fileToSend = file
-      // 非 PDF 文件需要先转换
-      if (file.type !== 'application/pdf') {
+      // 照片直接提交原图；其余非 PDF 文档先转换。
+      if (file.type !== 'application/pdf' && !isPhotoFile(file)) {
         const fd = new FormData()
-        if (dateEnabled && file.type.startsWith('image/')) {
-          fd.append('photo_date_watermark', 'true')
-          fd.append('photo_dates', JSON.stringify([await readPhotoDate(file)]))
-        }
-        const uploadFile = compressImages.value ? await downscaleImageIfNeeded(file, true) : file
-        fd.append('file', uploadFile, uploadFile.name)
+        fd.append('file', file, file.name)
         fd.append('orientation', orientation.value)
         fd.append('paper_size', paperSize.value)
         fd.append('borderless', String(!!driverOptions.value.pageSize?.borderless))
@@ -992,7 +992,8 @@ async function uploadAndPrintBatch() {
       }
 
       const form = new FormData()
-      form.append('file', fileToSend, fileToSend.name)
+      if (isPhotoFile(file)) appendPhotoUploads(form, [file])
+      else form.append('file', fileToSend, fileToSend.name)
       form.append('printer', printer.value)
       form.append('duplex', duplex.value === 'one-sided' ? 'false' : 'true')
       form.append('color', isColor.value ? 'true' : 'false')
@@ -1006,6 +1007,8 @@ async function uploadAndPrintBatch() {
       if (pageRange.value.trim()) form.append('page_range', pageRange.value.trim())
       if (pageSet.value && pageSet.value !== 'all') form.append('page_set', pageSet.value)
       if (mirror.value) form.append('mirror', 'true')
+      form.append('compress_images', String(compressImages.value))
+      if (invert.value) form.append('invert', 'true')
       form.append('photo_date_watermark', String(dateEnabled))
       if (watermarkText.value.trim()) form.append('watermark_text', watermarkText.value.trim())
       if (numberUp.value > 1) {
@@ -1040,39 +1043,17 @@ async function uploadAndPrintBatch() {
 // 通过后端 /api/convert 将单或多张图片合成为单个 PDF。
 // - 单图时传 `file` 字段；多图时传多个 `files` 字段，由后端 convertImagesMultiToPDF 合并。
 // - HEIC 已由 processFile / processMultipleImages 提前转换为 JPEG，这里无需特殊处理。
-// - 上传前用 downscaleImageIfNeeded 在浏览器端预压缩：长边 >3000px 的大图缩成 JPEG，
-//   避免多张原图合并时撞到反向代理的 client_max_body_size 触发 413（Issue #42）。
-//   阈值与后端 imageDownscaleMaxEdge 对齐，服务端拿到时已是合理尺寸，无需再 downscale。
-//   sequential 而非 Promise.all 是为了避免移动端同时持有多张大 canvas 导致 OOM。
+// - 原图直接上传，压缩和图片处理统一由后端负责，与打印使用同一条转换链路。
 async function convertImagesToPdfViaServer(files, orient, pSize, name, rotations, invert) {
   const list = Array.isArray(files) ? files : [files]
   const compress = compressImages.value
   const borderless = !!driverOptions.value.pageSize?.borderless
   const scaling = printScalingParam.value
   const dateEnabled = photoDateWatermark.value
-  const dates = []
-  const downscaled = []
-  for (const f of list) {
-    if (dateEnabled) dates.push(await readPhotoDate(f))
-    downscaled.push(await downscaleImageIfNeeded(f, compress))
-  }
   const fd = new FormData()
-  if (downscaled.length === 1) {
-    fd.append('file', downscaled[0], downscaled[0].name)
-  } else {
-    for (const f of downscaled) fd.append('files', f, f.name)
-    if (name) fd.append('name', name)
-    // 多图合一逐图旋转（issue #87）：按顺序对应每个 files 字段
-    if (rotations && rotations.length) {
-      fd.append('rotations', rotations.map(r => r || 0).join(','))
-    }
-    // 每页张数(issue #37):>1 时后端按网格排版到同一页。
-    if (imagesPerPage.value && imagesPerPage.value > 1) {
-      fd.append('per_page', String(imagesPerPage.value))
-    }
-  }
+  appendPhotoUploads(fd, list, { rotations, perPage: list.length > 1 ? imagesPerPage.value : 1, name })
 
-  if (dateEnabled) { fd.append('photo_date_watermark', 'true'); fd.append('photo_dates', JSON.stringify(dates)) }
+  if (dateEnabled) fd.append('photo_date_watermark', 'true')
   if (orient) fd.append('orientation', orient)
   if (pSize) fd.append('paper_size', pSize)
   fd.append('borderless', String(borderless))
@@ -1119,7 +1100,7 @@ async function convertToPdf() {
       )
     } else if (isOfficeFile(f) || isOFDFile(f)) {
       blob = await convertOfficeToPdf(f)
-    } else if (f.type.startsWith('image/')) {
+    } else if (isPhotoFile(f)) {
       blob = await convertImagesToPdfViaServer([f], orientation.value, paperSize.value, null, null, invert.value)
     } else {
       blob = await convertTextViaServer(f, orientation.value, paperSize.value)
@@ -1180,20 +1161,20 @@ async function uploadAndPrint() {
     return
   }
 
-  const fileToSend = pdfBlob.value || selectedFile.value
-  if (!fileToSend && !isMultiImage.value) { toast.add({ title: '请先选择文件', color: 'warning' }); return }
-  // 多图、压缩或日期水印先转 PDF，确保预览与打印使用同一份结果。
-  if ((isMultiImage.value || ((compressImages.value || photoDateWatermark.value) && isImageKind.value)) && !pdfBlob.value) {
-    await convertToPdf()
-    if (!pdfBlob.value) return
-  }
+  // Photos always submit their originals, even after a PDF preview was generated.
+  const photos = isImageKind.value
+    ? (isMultiImage.value ? [...selectedImages.value] : [selectedFile.value])
+    : []
   const actualFile = pdfBlob.value || selectedFile.value
-  const filename = pdfBlob.value
-    ? (downloadName.value || 'document.pdf')
-    : (selectedFile.value ? selectedFile.value.name : 'document')
-
+  if (!actualFile && photos.length === 0) { toast.add({ title: '请先选择文件', color: 'warning' }); return }
   const form = new FormData()
-  form.append('file', actualFile, filename)
+  if (photos.length > 0) {
+    appendPhotoUploads(form, photos, { rotations: isMultiImage.value ? imageRotations.value : [], perPage: isMultiImage.value ? imagesPerPage.value : 1, name: downloadName.value || '合并照片.pdf' })
+    form.append('invert', String(invert.value))
+    form.append('compress_images', String(compressImages.value))
+  } else {
+    form.append('file', actualFile, pdfBlob.value ? (downloadName.value || 'document.pdf') : selectedFile.value.name)
+  }
   form.append('printer', printer.value)
   form.append('duplex', duplex.value === 'one-sided' ? 'false' : 'true')
   form.append('color', isColor.value ? 'true' : 'false')
@@ -1207,8 +1188,6 @@ async function uploadAndPrint() {
   if (pageRange.value.trim()) form.append('page_range', pageRange.value.trim())
   if (pageSet.value && pageSet.value !== 'all') form.append('page_set', pageSet.value)
   if (mirror.value) form.append('mirror', 'true')
-  // 单图图片直接打印（未先转 PDF）时把黑白反转带给后端；已转成 PDF 的不传（反色已并入）
-  if (invert.value && !pdfBlob.value && isImageKind.value) form.append('invert', 'true')
   form.append('photo_date_watermark', String(photoDateWatermark.value))
   if (watermarkText.value.trim()) form.append('watermark_text', watermarkText.value.trim())
   if (numberUp.value > 1) {
@@ -1280,6 +1259,7 @@ async function handleReprint(payload) {
         pageSet: payload.pageSet,
         mirror: payload.mirror,
         photoDateWatermark: payload.photoDateWatermark,
+        compressImages: payload.compressImages, invert: payload.invert, imagesPerPage: payload.imagesPerPage,
         watermarkText: payload.watermarkText,
         numberUp: payload.numberUp,
         numberUpLayout: payload.numberUpLayout,

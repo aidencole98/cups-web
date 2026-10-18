@@ -203,6 +203,11 @@ func (s *Store) migrate(ctx context.Context) error {
 			return fmt.Errorf("migrate: %w", err)
 		}
 	}
+	for _, col := range []string{"photo_layout_json TEXT NOT NULL DEFAULT '{}'", "rendered_path TEXT NOT NULL DEFAULT ''"} {
+		if err := addColumnIfMissing(ctx, s.DB, "print_jobs", col); err != nil {
+			return err
+		}
+	}
 	// Issue #121：队列为空时保留旧任务反复打印单文件的语义。
 	for _, col := range []string{
 		"files_json TEXT NOT NULL DEFAULT '[]'",

@@ -36,7 +36,7 @@ func compressImageIfNeeded(inputPath, tmpDir string) (string, image.Config, erro
 	if err != nil {
 		return "", image.Config{}, err
 	}
-	if info.Size() <= imageCompressionMaxBytes {
+	if info.Size() <= imageCompressionMaxBytes && max(cfg.Width, cfg.Height) <= imageDownscaleMaxEdge {
 		return inputPath, cfg, nil
 	}
 	if _, err := f.Seek(0, 0); err != nil {

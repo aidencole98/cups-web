@@ -3,8 +3,8 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"log"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -25,17 +25,25 @@ func startMaintenance(s *store.Store, uploads string) {
 
 func cleanupAllPrints(ctx context.Context, s *store.Store, uploads string) (int, error) {
 	var paths []string
+	recordCount := 0
 	err := s.WithTx(ctx, false, func(tx *sql.Tx) error {
-		rows, err := tx.QueryContext(ctx, "SELECT stored_path FROM print_jobs")
+		rows, err := tx.QueryContext(ctx, "SELECT stored_path, photo_layout_json, rendered_path FROM print_jobs")
 		if err != nil {
 			return err
 		}
 		for rows.Next() {
-			var p string
-			if err := rows.Scan(&p); err != nil {
+			var record store.PrintRecord
+			var photoJSON string
+			if err := rows.Scan(&record.StoredPath, &photoJSON, &record.RenderedPath); err != nil {
+				rows.Close()
 				return err
 			}
-			paths = append(paths, p)
+			if err := json.Unmarshal([]byte(photoJSON), &record.PhotoLayout); err != nil {
+				rows.Close()
+				return err
+			}
+			paths = append(paths, printRecordPaths(record)...)
+			recordCount++
 		}
 		if err := rows.Err(); err != nil {
 			rows.Close()
@@ -49,28 +57,17 @@ func cleanupAllPrints(ctx context.Context, s *store.Store, uploads string) (int,
 		return 0, err
 	}
 
-	for _, rel := range paths {
-		if isScheduledRel(rel) {
-			// 保护定时任务源文件；对应"清空全部打印历史"仅清 print_jobs 表和普通上传。
-			continue
-		}
-		abs := filepath.Join(uploads, filepath.FromSlash(rel))
-		_ = os.Remove(abs)
-		cRel := convertedRelPath(rel)
-		if cRel != "" {
-			_ = os.Remove(filepath.Join(uploads, filepath.FromSlash(cRel)))
-		}
-	}
+	removePrintAssets(uploads, paths)
 
-	if len(paths) > 0 {
+	if recordCount > 0 {
 		if _, err := s.DB.ExecContext(ctx, "VACUUM"); err != nil {
-			return len(paths), err
+			return recordCount, err
 		}
 		if _, err := s.DB.ExecContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
-			return len(paths), err
+			return recordCount, err
 		}
 	}
-	return len(paths), nil
+	return recordCount, nil
 }
 
 func cleanupOldPrints(ctx context.Context, s *store.Store, uploads string, now time.Time) error {
@@ -92,17 +89,25 @@ func cleanupOldPrints(ctx context.Context, s *store.Store, uploads string, now t
 
 	cutoff := now.AddDate(0, 0, -int(retentionDays)).UTC().Format(time.RFC3339)
 	var paths []string
+	recordCount := 0
 	err = s.WithTx(ctx, false, func(tx *sql.Tx) error {
-		rows, err := tx.QueryContext(ctx, "SELECT stored_path FROM print_jobs WHERE created_at < ?", cutoff)
+		rows, err := tx.QueryContext(ctx, "SELECT stored_path, photo_layout_json, rendered_path FROM print_jobs WHERE created_at < ?", cutoff)
 		if err != nil {
 			return err
 		}
 		for rows.Next() {
-			var p string
-			if err := rows.Scan(&p); err != nil {
+			var record store.PrintRecord
+			var photoJSON string
+			if err := rows.Scan(&record.StoredPath, &photoJSON, &record.RenderedPath); err != nil {
+				rows.Close()
 				return err
 			}
-			paths = append(paths, p)
+			if err := json.Unmarshal([]byte(photoJSON), &record.PhotoLayout); err != nil {
+				rows.Close()
+				return err
+			}
+			paths = append(paths, printRecordPaths(record)...)
+			recordCount++
 		}
 		if err := rows.Err(); err != nil {
 			rows.Close()
@@ -116,23 +121,9 @@ func cleanupOldPrints(ctx context.Context, s *store.Store, uploads string, now t
 		return err
 	}
 
-	for _, rel := range paths {
-		// scheduled/ 前缀的文件属于定时任务源文件（issue #28），是共享资源：
-		// print_jobs 里可能有很多条历史指向同一份源文件，删掉会打断后续触发。
-		// 这里跳过；定时任务的清理由 DeleteScheduledPrint 负责。
-		if isScheduledRel(rel) {
-			continue
-		}
-		abs := filepath.Join(uploads, filepath.FromSlash(rel))
-		_ = os.Remove(abs)
-		convertedRel := convertedRelPath(rel)
-		if convertedRel != "" {
-			convertedAbs := filepath.Join(uploads, filepath.FromSlash(convertedRel))
-			_ = os.Remove(convertedAbs)
-		}
-	}
+	removePrintAssets(uploads, paths)
 
-	if len(paths) > 0 {
+	if recordCount > 0 {
 		if _, err := s.DB.ExecContext(ctx, "VACUUM"); err != nil {
 			return err
 		}

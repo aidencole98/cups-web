@@ -21,18 +21,28 @@ import (
 	"github.com/gorilla/mux"
 )
 
+type photoSourceResponse struct {
+	Filename string `json:"filename"`
+	Rotation int    `json:"rotation"`
+}
+
 type printRecordResponse struct {
-	DriverOptions ipp.DriverOptions `json:"driverOptions"`
-	ID            int64             `json:"id"`
-	UserID        int64             `json:"userId"`
-	Username      string            `json:"username"`
-	PrinterURI    string            `json:"printerUri"`
-	Filename      string            `json:"filename"`
-	Pages         int               `json:"pages"`
-	JobID         string            `json:"jobId"`
-	Status        string            `json:"status"`
-	IsDuplex      bool              `json:"isDuplex"`
-	IsColor       bool              `json:"isColor"`
+	PhotoSources   []photoSourceResponse `json:"photoSources,omitempty"`
+	ImagesPerPage  int                   `json:"imagesPerPage,omitempty"`
+	Invert         bool                  `json:"invert"`
+	CompressImages bool                  `json:"compressImages"`
+	HasRenderedPDF bool                  `json:"hasRenderedPDF"`
+	DriverOptions  ipp.DriverOptions     `json:"driverOptions"`
+	ID             int64                 `json:"id"`
+	UserID         int64                 `json:"userId"`
+	Username       string                `json:"username"`
+	PrinterURI     string                `json:"printerUri"`
+	Filename       string                `json:"filename"`
+	Pages          int                   `json:"pages"`
+	JobID          string                `json:"jobId"`
+	Status         string                `json:"status"`
+	IsDuplex       bool                  `json:"isDuplex"`
+	IsColor        bool                  `json:"isColor"`
 
 	// 完整打印参数快照，供前端「重新打印」预填第一次的设置（Issue #68）。
 	Copies             int    `json:"copies"`
@@ -152,9 +162,25 @@ func printRecordFileHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	path, filename := record.StoredPath, record.Filename
+	if raw := r.URL.Query().Get("source"); raw != "" {
+		index, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || index < 0 || index >= len(record.PhotoLayout.Sources) {
+			writeJSONError(w, 400, "invalid source index")
+			return
+		}
+		source := record.PhotoLayout.Sources[index]
+		path, filename = source.StoredPath, source.Filename
+	} else if r.URL.Query().Get("variant") == "rendered" {
+		if record.RenderedPath == "" {
+			writeJSONError(w, 404, "print PDF not available")
+			return
+		}
+		path, filename = record.RenderedPath, strings.TrimSuffix(record.Filename, filepath.Ext(record.Filename))+".pdf"
+	}
 	// os.OpenInRoot 将文件访问限制在 uploadDir 目录树内，即便 StoredPath 被污染
 	// 成 ../ 逃逸路径也会被 OS 层拒绝（纵深防御，Go 1.24+）。
-	f, err := os.OpenInRoot(uploadDir, filepath.FromSlash(record.StoredPath))
+	f, err := os.OpenInRoot(uploadDir, filepath.FromSlash(path))
 	if err != nil {
 		writeJSONError(w, http.StatusNotFound, "file not found")
 		return
@@ -166,9 +192,9 @@ func printRecordFileHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	disposition := mime.FormatMediaType("attachment", map[string]string{"filename": record.Filename})
+	disposition := mime.FormatMediaType("attachment", map[string]string{"filename": filename})
 	w.Header().Set("Content-Disposition", disposition)
-	http.ServeContent(w, r, record.Filename, stat.ModTime(), f)
+	http.ServeContent(w, r, filename, stat.ModTime(), f)
 }
 
 func parseDateRange(r *http.Request) (string, string, error) {
@@ -200,11 +226,16 @@ func parseDateRange(r *http.Request) (string, string, error) {
 func mapPrintRecords(records []store.PrintRecord) []printRecordResponse {
 	resp := make([]printRecordResponse, 0, len(records))
 	for _, rec := range records {
+		sources := make([]photoSourceResponse, 0, len(rec.PhotoLayout.Sources))
+		for _, source := range rec.PhotoLayout.Sources {
+			sources = append(sources, photoSourceResponse{Filename: source.Filename, Rotation: source.Rotation})
+		}
 		jobID := ""
 		if rec.JobID.Valid {
 			jobID = rec.JobID.String
 		}
 		resp = append(resp, printRecordResponse{
+			PhotoSources: sources, ImagesPerPage: rec.PhotoLayout.PerPage, Invert: rec.PhotoLayout.Invert, CompressImages: rec.PhotoLayout.Compress, HasRenderedPDF: rec.RenderedPath != "",
 			ID:         rec.ID,
 			UserID:     rec.UserID,
 			Username:   rec.Username,
@@ -239,6 +270,9 @@ func mapPrintRecords(records []store.PrintRecord) []printRecordResponse {
 }
 
 type reprintRequest struct {
+	CompressImages     *bool             `json:"compressImages"`
+	Invert             *bool             `json:"invert"`
+	ImagesPerPage      *int              `json:"imagesPerPage"`
 	DriverOptions      ipp.DriverOptions `json:"driverOptions"`
 	Printer            string            `json:"printer"`
 	Duplex             bool              `json:"duplex"`
@@ -323,6 +357,10 @@ func reprintHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if len(record.PhotoLayout.Sources) > 0 {
+		reprintPhotos(w, r, record, req)
+		return
+	}
 	origFile, err := os.OpenInRoot(uploadDir, filepath.FromSlash(record.StoredPath))
 	if err != nil {
 		writeJSONError(w, http.StatusNotFound, "original file not found, may have been cleaned up")

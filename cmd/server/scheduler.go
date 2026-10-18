@@ -123,7 +123,6 @@ func executeScheduled(s *store.Store, uploads string, task store.ScheduledPrint)
 	defer cancel()
 
 	printPath := absPath
-	layoutPaperSize := task.PaperSize
 	var printCleanup func()
 	printMime := ""
 	var pages int
@@ -164,16 +163,7 @@ func executeScheduled(s *store.Store, uploads string, task store.ScheduledPrint)
 			return "failed", fmt.Errorf("解析页数失败：%w", err)
 		}
 	case fileKindImage:
-		imagePaperSize := task.PaperSize
-		if len(task.Files) > 0 {
-			// 驱动尺寸可能宽在前；转换器以纵向尺寸为基准再应用方向。
-			// 只调整本张 PDF 的布局尺寸，不修改驱动选择或记录的纸张参数。
-			if w, h, ok := ipp.ParsePaperDimensions(imagePaperSize); ok && w > h {
-				imagePaperSize = fmt.Sprintf("custom:%.4fx%.4f", h, w)
-			}
-		}
-		layoutPaperSize = imagePaperSize
-		outPath, cleanup, err := convertImageToPDF(absPath, task.Orientation, imagePaperSize, false, false, imagePDFOptions{
+		outPath, cleanup, err := convertImageToPDF(absPath, task.Orientation, task.PaperSize, false, false, imagePDFOptions{
 			PhotoDateWatermark: task.PhotoDateWatermark,
 			Borderless:         task.DriverOptions.PageSize != nil && task.DriverOptions.PageSize.Borderless, PrintScaling: task.PrintScaling,
 		})
@@ -211,7 +201,7 @@ func executeScheduled(s *store.Store, uploads string, task store.ScheduledPrint)
 		defer printCleanup()
 	}
 
-	printScaling := photoPrintScaling(printPath, task.PrintScaling, printMime, task.Orientation, layoutPaperSize)
+	printScaling := photoPrintScaling(printPath, task.PrintScaling, printMime, task.Orientation, task.PaperSize)
 	if watermark := strings.TrimSpace(task.WatermarkText); watermark != "" && printMime == "application/pdf" {
 		wmPath, wmCleanup, wmErr := applyWatermarkToPDF(printPath, watermark)
 		if wmErr != nil {
@@ -249,18 +239,47 @@ func executeScheduled(s *store.Store, uploads string, task store.ScheduledPrint)
 		isDuplex = false
 	}
 
+	recordStoredPath := task.StoredPath
+	var recordPhotoLayout store.PhotoLayout
+	var renderedRel string
+	keepHistoryAssets := false
+	var historyAssets []string
+	defer func() {
+		if !keepHistoryAssets {
+			removePrintAssets(uploads, historyAssets)
+		}
+	}()
+	if kind == fileKindImage {
+		original, openErr := os.OpenInRoot(uploads, filepath.FromSlash(task.StoredPath))
+		if openErr != nil {
+			return "failed", openErr
+		}
+		recordStoredPath, _, err = saveUploadedFile(original, task.Filename, uploads)
+		original.Close()
+		if err != nil {
+			return "failed", err
+		}
+		historyAssets = append(historyAssets, recordStoredPath)
+		recordPhotoLayout = store.PhotoLayout{PerPage: 1, Sources: []store.PhotoSource{{Filename: task.Filename, StoredPath: recordStoredPath}}}
+		renderedRel, err = saveRenderedPDF(printPath, recordStoredPath, uploads)
+		if err != nil {
+			return "failed", err
+		}
+		historyAssets = append(historyAssets, renderedRel)
+	}
 	// 打印前先在 print_jobs 里落一条历史，让用户在打印历史页看到"来自定时任务"的记录。
 	var recordID int64
 	if err := s.WithTx(ctx, false, func(tx *sql.Tx) error {
 		rec := store.PrintRecord{
-			UserID:     task.UserID,
-			PrinterURI: task.PrinterURI,
-			Filename:   task.Filename,
-			StoredPath: task.StoredPath,
-			Pages:      pages,
-			Status:     "queued",
-			IsDuplex:   isDuplex,
-			IsColor:    task.IsColor,
+			UserID:      task.UserID,
+			PrinterURI:  task.PrinterURI,
+			Filename:    task.Filename,
+			StoredPath:  recordStoredPath,
+			PhotoLayout: recordPhotoLayout, RenderedPath: renderedRel,
+			Pages:    pages,
+			Status:   "queued",
+			IsDuplex: isDuplex,
+			IsColor:  task.IsColor,
 
 			Copies:             task.Copies,
 			Orientation:        task.Orientation,
@@ -290,6 +309,7 @@ func executeScheduled(s *store.Store, uploads string, task store.ScheduledPrint)
 		return "failed", fmt.Errorf("落打印历史失败：%w", err)
 	}
 
+	keepHistoryAssets = true
 	f, err := os.Open(printPath)
 	if err != nil {
 		return "failed", fmt.Errorf("打开待打印文件失败：%w", err)

@@ -129,12 +129,19 @@ func assertPDFImageLimit(t *testing.T, path string, pages, images int, compresse
 	count := 0
 	for page := 1; page <= pages; page++ {
 		xobjects := doc.Page(page).V.Key("Resources").Key("XObject")
+		rscpdf.Interpret(doc.Page(page).V.Key("Contents"), func(stack *rscpdf.Stack, op string) {
+			if op == "Do" {
+				count++
+			}
+			for stack.Len() > 0 {
+				stack.Pop()
+			}
+		})
 		for _, key := range xobjects.Keys() {
 			obj := xobjects.Key(key)
 			if obj.Key("Subtype").Name() != "Image" {
 				continue
 			}
-			count++
 			if compressed && obj.Key("Length").Int64() > imageCompressionMaxBytes {
 				t.Fatalf("embedded image exceeds limit: %d", obj.Key("Length").Int64())
 			}

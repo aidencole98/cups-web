@@ -12,7 +12,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"testing"
 
@@ -34,28 +33,58 @@ func assertPhotoPDFLayout(t *testing.T, data []byte, pageHeight float64, images,
 		t.Fatal(err)
 	}
 	var imageRects, clipRects []photoRect
-	imageRE := regexp.MustCompile(`([-\d.]+) 0 0 ([-\d.]+) ([-\d.]+) ([-\d.]+) cm`)
-	clipRE := regexp.MustCompile(`q ([-\d.]+) ([-\d.]+) ([-\d.]+) ([-\d.]+) re W n`)
-	mm := func(s string) float64 {
-		n, err := strconv.ParseFloat(s, 64)
-		if err != nil {
-			t.Fatal(err)
+	type matrix [6]float64
+	identity := matrix{1, 0, 0, 1, 0, 0}
+	multiply := func(a, b matrix) matrix {
+		return matrix{
+			a[0]*b[0] + a[2]*b[1], a[1]*b[0] + a[3]*b[1],
+			a[0]*b[2] + a[2]*b[3], a[1]*b[2] + a[3]*b[3],
+			a[0]*b[4] + a[2]*b[5] + a[4], a[1]*b[4] + a[3]*b[5] + a[5],
 		}
-		return n * 25.4 / 72
+	}
+	rect := func(m matrix, x, y, w, h float64) photoRect {
+		minX, minY, maxX, maxY := math.Inf(1), math.Inf(1), math.Inf(-1), math.Inf(-1)
+		for _, point := range [][2]float64{{x, y}, {x + w, y}, {x, y + h}, {x + w, y + h}} {
+			px, py := m[0]*point[0]+m[2]*point[1]+m[4], m[1]*point[0]+m[3]*point[1]+m[5]
+			minX, minY, maxX, maxY = math.Min(minX, px), math.Min(minY, py), math.Max(maxX, px), math.Max(maxY, py)
+		}
+		return photoRect{minX * 25.4 / 72, pageHeight - maxY*25.4/72, (maxX - minX) * 25.4 / 72, (maxY - minY) * 25.4 / 72}
 	}
 	for p := 1; p <= doc.NumPage(); p++ {
-		stream := doc.Page(p).V.Key("Contents").Reader()
-		contents, err := io.ReadAll(stream)
-		stream.Close()
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, m := range imageRE.FindAllStringSubmatch(string(contents), -1) {
-			imageRects = append(imageRects, photoRect{mm(m[3]), pageHeight - mm(m[4]) - mm(m[2]), mm(m[1]), mm(m[2])})
-		}
-		for _, m := range clipRE.FindAllStringSubmatch(string(contents), -1) {
-			clipRects = append(clipRects, photoRect{mm(m[1]), pageHeight - mm(m[2]), mm(m[3]), -mm(m[4])})
-		}
+		current := identity
+		var saved []matrix
+		var clipping photoRect
+		rscpdf.Interpret(doc.Page(p).V.Key("Contents"), func(stack *rscpdf.Stack, op string) {
+			args := make([]rscpdf.Value, stack.Len())
+			for i := len(args) - 1; i >= 0; i-- {
+				args[i] = stack.Pop()
+			}
+			switch op {
+			case "q":
+				saved = append(saved, current)
+			case "Q":
+				if len(saved) > 0 {
+					current = saved[len(saved)-1]
+					saved = saved[:len(saved)-1]
+				}
+			case "cm":
+				if len(args) == 6 {
+					var next matrix
+					for i := range next {
+						next[i] = args[i].Float64()
+					}
+					current = multiply(current, next)
+				}
+			case "Do":
+				imageRects = append(imageRects, rect(current, 0, 0, 1, 1))
+			case "re":
+				if len(args) == 4 {
+					clipping = rect(current, args[0].Float64(), args[1].Float64(), args[2].Float64(), args[3].Float64())
+				}
+			case "W":
+				clipRects = append(clipRects, clipping)
+			}
+		})
 	}
 	check := func(name string, got, want []photoRect) {
 		t.Helper()

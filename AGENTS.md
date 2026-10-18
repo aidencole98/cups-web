@@ -343,7 +343,7 @@ KV 表。当前键：`retention_days`（`0` = 永久）、`session_hash_key` / `
 - `pdf` → `normalizePDF`（gs → LibreOffice → passthrough）
 - `office` → LibreOffice `--convert-to pdf`
 - `ofd` → `java -jar /ofd-converter.jar`
-- `image` → `gofpdf`（大图先下采样到 3000px）
+- `image` → `gofpdf`（默认保留原始像素，显式压缩时限制 3000px / 每图 800KB；旋转使用 PDF 矩阵）
 - `text` → `gofpdf` + 内嵌中文字体
 
 > ⚠️ 标准化管线只解决 CUPS 老驱动兼容性问题，gs 会破坏空壳 CJK 字体导致 pdf.js 预览错位。管线原理与 cidfmap 机制见 [docs/pdf-pipeline.md](docs/pdf-pipeline.md)。
@@ -369,8 +369,15 @@ KV 表。当前键：`retention_days`（`0` = 永久）、`session_hash_key` / `
 ### 照片拍摄日期水印（issue #124）
 
 - `photo_date_watermark`（multipart）/ `photoDateWatermark`（JSON）默认关闭，在打印记录和定时任务中持久化。普通打印、重打、定时执行共用图片转 PDF 绘制逻辑。
-- 只读取 JPEG/PNG EXIF `DateTimeOriginal`，不以修改时间或当前日期替代；缺失或无效时跳过。浏览器必须在压缩前提取日期，用 `/api/convert` 的 `photo_dates` 数组按图片顺序传递；后端严格校验日期与数量。
+- 只读取 JPEG/PNG EXIF `DateTimeOriginal`，不以修改时间或当前日期替代；缺失或无效时跳过。当前浏览器预览和打印均上传原图，后端在处理前提取日期；自行预压缩的客户端须用 `/api/convert` 的 `photo_dates` 数组按顺序传递，后端严格校验日期与数量。
 - 日期在图片旋转、适应/填充排版后按每张可见区域右下角定位；开启/关闭须使旧 PDF 缓存失效。已生成 PDF 的日期直接保留，重打不重复叠加。详见 [docs/printer-options.md](docs/printer-options.md)。
+
+### 照片原图与打印 PDF
+
+- `/api/print` 保留单文件 `file`，支持照片数组 `files`（1–100 张，禁止混用），复用 `rotations` / `per_page` / `invert` / `compress_images`。预览 PDF 不代替原图上传。
+- `print_jobs.photo_layout_json` 保存有序原图及排版快照，`rendered_path` 保存应用提交的 PDF。照片重打从原图生成并复制独立资产，清理一条历史不能损坏其他历史。定时打印历史另存原图，任务源文件仍由任务管理。
+- 照片的自定义纸张以短边在前为方向基准，再应用 `orientation`；转换、预览、重打和定时执行共用这一约定。
+- 原图下载沿用 `/api/print-records/{id}/file?source=<索引>`，提交 PDF 用 `?variant=rendered`，均限本人或管理员，并通过 `os.OpenInRoot` 限制路径。历史到期/手动清理须覆盖全部关联资产，保护 `scheduled/` 共享文件。
 
 ## 🧹 维护任务
 

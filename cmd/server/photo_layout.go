@@ -16,6 +16,11 @@ func newPhotoPDF(orientation, paperSize string) *gofpdf.Fpdf {
 	if name != "" {
 		return gofpdf.New(getOrientationCode(orientation), "mm", name, "")
 	}
+	// Driver dimensions can be reported wide edge first. Apply the selected
+	// direction to a portrait base in every photo path, including reprints.
+	if size.Wd > size.Ht {
+		size.Wd, size.Ht = size.Ht, size.Wd
+	}
 	return gofpdf.NewCustom(&gofpdf.InitType{
 		UnitStr: "mm", Size: size, OrientationStr: getOrientationCode(orientation),
 	})
