@@ -51,8 +51,10 @@ func runLibreOfficeConvert(ctx context.Context, inputPath string, filter string,
 	}
 	args = append(args, "--outdir", tmpDir, inputPath)
 	cmd := exec.CommandContext(ctx, "libreoffice", args...)
-	cmd.Env = append(os.Environ(), "LANG=zh_CN.UTF-8", "LC_ALL=zh_CN.UTF-8")
-	if out, err := cmd.CombinedOutput(); err != nil {
+	// Debian slim 自带 C.UTF-8；zh_CN.UTF-8 未生成时会导致中文路径加载失败。
+	cmd.Env = append(os.Environ(), "LANG=C.UTF-8", "LC_ALL=C.UTF-8")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
 		cleanup()
 		return "", nil, fmt.Errorf("conversion failed: %w - %s", err, string(out))
 	}
@@ -64,12 +66,34 @@ func runLibreOfficeConvert(ctx context.Context, inputPath string, filter string,
 		matches, _ := filepath.Glob(filepath.Join(tmpDir, "*.pdf"))
 		if len(matches) == 0 {
 			cleanup()
-			return "", nil, fmt.Errorf("conversion produced no PDF")
+			return "", nil, fmt.Errorf("conversion produced no PDF: %s", strings.TrimSpace(string(out)))
 		}
 		outPath = matches[0]
 	}
 
+	// LibreOffice 可能返回 0 却没有有效产物，不能仅依赖命令退出码。
+	if err := validateConvertedPDF(outPath); err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("conversion produced invalid PDF: %w - %s", err, strings.TrimSpace(string(out)))
+	}
+
 	return outPath, cleanup, nil
+}
+
+func validateConvertedPDF(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() || info.Size() == 0 {
+		return fmt.Errorf("output is not a non-empty regular file")
+	}
+	return nil
 }
 
 // convertOfficeToPDF 将 Office 文档（.doc/.docx/.xls/.xlsx/.ppt/.pptx）转成 PDF。
@@ -100,7 +124,7 @@ func convertOFDToPDF(ctx context.Context, inputPath string) (string, func(), err
 	}
 
 	cmd := exec.CommandContext(ctx, "java", "-Xmx512m", "-jar", jarPath, inputPath, outPath)
-	cmd.Env = append(os.Environ(), "LANG=zh_CN.UTF-8", "LC_ALL=zh_CN.UTF-8")
+	cmd.Env = append(os.Environ(), "LANG=C.UTF-8", "LC_ALL=C.UTF-8")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		cleanup()
 		return "", nil, fmt.Errorf("OFD to PDF conversion failed: %w - %s", err, string(out))

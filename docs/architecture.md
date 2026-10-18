@@ -40,6 +40,8 @@ Office 文档 → PDF；同时作为 PDF 标准化的兜底链路。
 
 **⚠️ 依赖可写 `HOME`**：Dockerfile 显式 `ENV HOME=/root` + 预建 `~/.config/libreoffice`，拿不到可写 HOME 时 `--convert-to pdf` 会返回 0 但不产出 PDF（静默失败，极难排查）。
 
+**⚠️ 转换子进程必须使用可用的 UTF-8 locale（issue #125）**：LibreOffice、OFD 和 Ghostscript 使用 `LANG=C.UTF-8` / `LC_ALL=C.UTF-8`，与 Debian slim 镜像自带环境一致。不要强制使用未生成的 `zh_CN.UTF-8`，否则中文文件名的 DOCX 可能报 `Error: source file could not be loaded`，退出码仍为 0。LibreOffice 转换完成后还会检查产物可读、为普通文件且非空；缺失或无效时保留命令输出，便于诊断。locale 只作用于转换子进程。
+
 ### Java 21 + `ofd-converter.jar`
 
 OFD 文档 → PDF（基于 `ofdrw`）。构建期 `openjdk-21-jdk-headless`，运行期 `openjdk-21-jre`。
